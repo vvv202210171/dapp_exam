@@ -1,0 +1,14 @@
+node_modules/
+dist/
+data/
+*.db
+*.db-*
+server/data/
+web/dist/
+contracts/cache/
+contracts/artifacts/
+contracts/typechain-types/
+.env
+*.log
+coverage/
+.DS_Store
