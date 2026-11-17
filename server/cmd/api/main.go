@@ -17,6 +17,7 @@ import (
 	"aegis/internal/platform"
 	"aegis/internal/platform/httpx"
 	"aegis/internal/service"
+	"aegis/internal/settlement"
 	"aegis/internal/store"
 )
 
@@ -52,6 +53,7 @@ func main() {
 		service.NewTransfer(db, reg, prices, cfg.Network, cfg.Mode),
 		service.NewCard(db, key),
 		reg,
+		settlement.New(db, client),
 	)
 	// 超时是为了挡住慢客户端占住连接。写超时要盖住一次链上报价。
 	srv := &http.Server{

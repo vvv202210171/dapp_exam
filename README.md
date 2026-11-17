@@ -36,8 +36,10 @@ Solidity CardSettlement
 | --- | --- |
 | `web/` | React 钱包。保险库、派生、签名、页面 |
 | `server/` | Go API。适配器、SQLite、卡账本 |
+| `server-java/` | 同一套 `/api/v1` 的 Spring Boot 版，按 Controller、Service、DAO 分层。和 Go 二选一，都监听 8080 |
 | `contracts/` | Hardhat 合约和测试 |
 | `docs/interview.md` | 面试时可以怎么讲 |
+| `docs/settlement.md` | 链上结算每一步的操作逻辑和原因 |
 
 ## 本地运行
 
@@ -58,12 +60,28 @@ npm run dev
 
 打开 http://localhost:5173 。
 
-合约：
+Java 版是 Spring Boot，接口和 Go 版相同，数据目录分开，不要同时占 8080。本机没有 Maven 时 `build.ps1` 会自己下载：
+
+```powershell
+cd server-java
+.\build.ps1
+.\build.ps1 run
+```
+
+合约和本地链。Hardhat 节点要一直开着；它重启后状态清空，需要重新部署：
 
 ```powershell
 cd contracts
 npm install
 npm test
+npx hardhat node
+```
+
+另开一个终端：
+
+```powershell
+cd contracts
+npm run deploy
 ```
 
 ## 建议走一遍
@@ -73,7 +91,7 @@ npm test
 3. 转账页选 Ethereum，点“填入本钱包的下一个地址”，先“只签名”，再去记录页广播。
 4. 开一张虚拟卡，充值、消费、看当月账单。实体卡在激活前不能消费。
 5. 链控制台看每条链的健康状态，并翻一遍排查手册。
-6. 链上结算页生成 `deposit` 的 calldata。合约行为以 `contracts` 的测试为准。
+6. 链上结算页：领取测试 ETH 和 USDC，授权并存入，到卡片里充值并记一笔消费，回到结算页点结算，再提走剩余。每一步谁签名、账怎么对，写在 `docs/settlement.md`。
 
 公开测试助记词（没有资金，所有教程都在用）：
 
@@ -113,26 +131,4 @@ go run ./cmd/api
 - 卡号以 `990016` 开头，只存在于这个沙箱。
 - 交易历史是这只钱包自己发出的，不是链上全量流水。
 1
-snow
-2
-wool
-3
-denial
-4
-delay
-5
-repair
-6
-admit
-7
-onion
-8
-solid
-9
-confirm
-10
-room
-11
-gas
-12
-pattern
+snow wool denial delay repair admit onion solid confirm room gas pattern

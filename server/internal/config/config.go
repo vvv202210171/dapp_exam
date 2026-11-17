@@ -22,7 +22,7 @@ type Config struct {
 
 // 读取环境变量，整理监听地址、模式、网络、数据库路径和各链节点。
 func Load() (Config, error) {
-	mode := getenv("MODE", "sandbox")
+	mode := getenv("MODE", "live")
 	if mode != "sandbox" && mode != "live" {
 		return Config{}, fmt.Errorf("MODE 只能是 sandbox 或 live")
 	}

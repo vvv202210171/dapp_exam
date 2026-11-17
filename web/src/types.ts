@@ -147,6 +147,47 @@ export type Bill = {
   entries: LedgerEntry[];
 };
 
+export type SettlementSpend = {
+  entryId: string;
+  cardId: string;
+  last4: string;
+  merchant?: string;
+  amount: string;
+  units: string;
+  settled: boolean;
+  txHash?: string;
+  createdAt: string;
+};
+
+export type SettlementView = {
+  online: boolean;
+  hint?: string;
+  chainId?: string;
+  rpc?: string;
+  settlement?: string;
+  usdc?: string;
+  operator?: string;
+  user?: string;
+  eth?: string;
+  walletUsdc?: string;
+  allowance?: string;
+  available?: string;
+  spends: SettlementSpend[];
+};
+
+export type SettlementQuote = {
+  action: string;
+  amount: string;
+  payload: Record<string, unknown>;
+  fee: { symbol: string; amount: string };
+  warnings: string[];
+};
+
+export type SettlementReceipt = {
+  hash: string;
+  status: string;
+};
+
 export type Health = {
   chain: Chain;
   name: string;

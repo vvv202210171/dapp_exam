@@ -22,7 +22,7 @@ type Client struct {
 	http    *httpx.Client
 }
 
-// 创建一个 TRON HTTP 钱包客户端。
+// New 创建一个 TRON HTTP 钱包客户端。
 func New(network, base string, http *httpx.Client) *Client {
 	return &Client{network: network, base: strings.TrimRight(base, "/"), http: http}
 }

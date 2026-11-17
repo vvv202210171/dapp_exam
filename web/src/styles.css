@@ -106,6 +106,9 @@ main { padding: 28px 36px 64px; }
 .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 16px 0 22px; }
 .steps article { background: var(--bg-2); border-radius: 16px; padding: 16px; border: 1px solid var(--line); }
 .steps span { font-family: var(--mono); color: var(--lime); }
+.kv { display: grid; grid-template-columns: 92px 1fr; gap: 6px 10px; font-size: 13px; }
+.kv span { color: var(--muted); }
+.kv b { font-weight: 500; word-break: break-all; }
 @media (max-width: 960px) {
   .welcome, .setup, .shell, .two, .points, .bill, .steps { grid-template-columns: 1fr; }
   .hero, .panel, main { padding: 28px 18px; }

@@ -7,25 +7,28 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"aegis/internal/chain"
 	"aegis/internal/domain"
 	"aegis/internal/platform/fault"
 	"aegis/internal/service"
+	"aegis/internal/settlement"
 )
 
 type Server struct {
-	Accounts  *service.AccountService
-	Assets    *service.AssetService
-	Transfers *service.TransferService
-	Cards     *service.CardService
-	Chains    *chain.Registry
+	Accounts   *service.AccountService
+	Assets     *service.AssetService
+	Transfers  *service.TransferService
+	Cards      *service.CardService
+	Chains     *chain.Registry
+	Settlement *settlement.Service
 }
 
-// 把账户、资产、转账、卡和链注册到 HTTP 服务。
-func New(accounts *service.AccountService, assets *service.AssetService, transfers *service.TransferService, cards *service.CardService, chains *chain.Registry) *Server {
-	return &Server{Accounts: accounts, Assets: assets, Transfers: transfers, Cards: cards, Chains: chains}
+// 把账户、资产、转账、卡、链和结算注册到 HTTP 服务。
+func New(accounts *service.AccountService, assets *service.AssetService, transfers *service.TransferService, cards *service.CardService, chains *chain.Registry, settle *settlement.Service) *Server {
+	return &Server{Accounts: accounts, Assets: assets, Transfers: transfers, Cards: cards, Chains: chains, Settlement: settle}
 }
 
 // 注册全部 /api/v1 路由。
@@ -54,6 +57,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/cards/{id}/withdraw", s.withdraw)
 	mux.HandleFunc("POST /api/v1/cards/{id}/transition", s.transition)
 	mux.HandleFunc("GET /api/v1/cards/{id}/bills", s.bill)
+	mux.HandleFunc("GET /api/v1/accounts/{id}/settlement", s.settlementStatus)
+	mux.HandleFunc("POST /api/v1/accounts/{id}/settlement/prepare", s.settlementPrepare)
+	mux.HandleFunc("POST /api/v1/accounts/{id}/settlement/broadcast", s.settlementBroadcast)
+	mux.HandleFunc("POST /api/v1/accounts/{id}/settlement/faucet", s.settlementFaucet)
+	mux.HandleFunc("POST /api/v1/accounts/{id}/settlement/settle", s.settlementSettle)
 	return logRequests(cors(mux))
 }
 
@@ -77,7 +85,7 @@ func (s *Server) meta(w http.ResponseWriter, r *http.Request) {
 		"network":    s.Chains.Network(),
 		"chains":     s.Chains.Chains(),
 		"warnings":   warnings,
-		"settlement": map[string]string{"name": "CardSettlement", "note": "合约在 contracts/。充值、结算、提现的链上版本用 USDC，和沙箱卡账本是两条账。"},
+		"settlement": map[string]string{"name": "CardSettlement", "note": "本地链上，用户签名存入和提现，运营方账户结算卡消费。卡账本仍按“分”记账。"},
 	})
 }
 
@@ -301,8 +309,39 @@ func (s *Server) revealCard(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, secret)
 }
 
-// 处理充值请求。
-func (s *Server) topup(w http.ResponseWriter, r *http.Request) { s.move(w, r, s.Cards.Topup) }
+// 充值必须对应一笔已经确认的 USDC 存入。核对通过后才给卡加余额。
+func (s *Server) topup(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Amount string `json:"amount"`
+		TxHash string `json:"txHash"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeErr(w, err)
+		return
+	}
+	// 先查出卡对应的账户，再让结算服务确认存入交易。
+	card, err := s.Cards.Get(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	// 结算服务会检查交易是否已经上链、是否成功、是否是 USDC、是否是存入操作、是否是给这个账户的。
+	if err := s.Settlement.ConfirmDeposit(r.Context(), card.AccountID, body.Amount, body.TxHash); err != nil {
+		writeErr(w, err)
+		return
+	}
+	// 交易确认后再给卡加余额。幂等键用交易哈希。
+	result, err := s.Cards.CreditDeposit(r.Context(), card.ID, service.MoveInput{
+		Amount:         body.Amount,
+		Note:           "USDC 已存入结算合约 " + strings.TrimSpace(body.TxHash),
+		IdempotencyKey: body.TxHash,
+	})
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
 
 // 处理消费请求。
 func (s *Server) spend(w http.ResponseWriter, r *http.Request) { s.move(w, r, s.Cards.Spend) }
@@ -355,6 +394,78 @@ func (s *Server) bill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, bill)
+}
+
+// 返回本地链余额和未结算的卡消费。节点没开时也返回流水。
+func (s *Server) settlementStatus(w http.ResponseWriter, r *http.Request) {
+	view, err := s.Settlement.Status(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+// 为授权、存入或提现报价。签名留在浏览器。
+func (s *Server) settlementPrepare(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Action string `json:"action"`
+		Amount string `json:"amount"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeErr(w, err)
+		return
+	}
+	quote, err := s.Settlement.Prepare(r.Context(), r.PathValue("id"), body.Action, body.Amount)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, quote)
+}
+
+// 广播用户已经签好的结算交易。
+func (s *Server) settlementBroadcast(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		SignedPayload string `json:"signedPayload"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeErr(w, err)
+		return
+	}
+	receipt, err := s.Settlement.Broadcast(r.Context(), r.PathValue("id"), body.SignedPayload)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, receipt)
+}
+
+// 给当前账户的以太坊地址打测试 ETH 和 USDC。
+func (s *Server) settlementFaucet(w http.ResponseWriter, r *http.Request) {
+	result, err := s.Settlement.Faucet(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// 用运营方账户结算一笔卡消费。
+func (s *Server) settlementSettle(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		EntryID string `json:"entryId"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeErr(w, err)
+		return
+	}
+	receipt, err := s.Settlement.Settle(r.Context(), r.PathValue("id"), body.EntryID)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, receipt)
 }
 
 // 解析请求体，空体和坏 JSON 都返回参数错误。

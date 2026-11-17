@@ -4,9 +4,16 @@ data/
 *.db
 *.db-*
 server/data/
+server-java/build/
+server-java/target/
+server-java/.tools/
+server-java/data/
+server-java/lib/
 web/dist/
 contracts/cache/
 contracts/artifacts/
+contracts/deployments/
+contracts/deployments/
 contracts/typechain-types/
 .env
 *.log

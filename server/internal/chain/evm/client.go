@@ -78,14 +78,12 @@ func (c *Client) Balance(ctx context.Context, address string, asset domain.Asset
 
 // 估算 gas、费用和 pending nonce，拼出未签名的 EIP-1559 交易。
 func (c *Client) Prepare(ctx context.Context, from, to, amount string, units *big.Int, asset domain.Asset) (domain.PrepareResult, error) {
-	var warnings []string
-	call := map[string]string{"from": from}
+	var head []string
 	value := big.NewInt(0)
 	data := "0x"
 	target := to
 	if asset.Kind == "native" {
 		value = units
-		call["value"] = quantityHex(value)
 	} else {
 		if asset.Contract == "" {
 			return domain.PrepareResult{}, domain.E("INVALID_ARGUMENT", "当前网络不能转这个代币", asset.Note)
@@ -96,34 +94,60 @@ func (c *Client) Prepare(ctx context.Context, from, to, amount string, units *bi
 		}
 		data = encoded
 		target = asset.Contract
-		warnings = append(warnings, "代币转账的 gas 用原生币支付，目标地址要有对应代币余额。")
+		head = append(head, "代币转账的 gas 用原生币支付，目标地址要有对应代币余额。")
 	}
-	call["to"] = target
-	if data != "0x" {
+	payload, fee, warnings, err := c.PrepareContractCall(ctx, from, target, value, data)
+	if err != nil {
+		return domain.PrepareResult{}, err
+	}
+	return domain.PrepareResult{
+		Chain:    c.chain,
+		Network:  c.network,
+		Mode:     "live",
+		Asset:    asset.Symbol,
+		From:     from,
+		To:       to,
+		Amount:   amount,
+		Fee:      fee,
+		Payload:  payload,
+		Warnings: append(head, warnings...),
+	}, nil
+}
+
+// 给任意合约调用报价。value 用 wei，data 是已经编码好的 calldata。
+func (c *Client) PrepareContractCall(ctx context.Context, from, to string, value *big.Int, data string) (domain.EVMPayload, domain.Fee, []string, error) {
+	if value == nil {
+		value = big.NewInt(0)
+	}
+	var warnings []string
+	call := map[string]string{"from": from, "to": to}
+	if value.Sign() > 0 {
+		call["value"] = quantityHex(value)
+	}
+	if data != "" && data != "0x" {
 		call["data"] = data
 	}
 	gasRaw, err := c.call(ctx, "eth_estimateGas", []any{call})
 	if err != nil {
-		return domain.PrepareResult{}, err
+		return domain.EVMPayload{}, domain.Fee{}, nil, err
 	}
 	gas, err := parseHex(gasRaw)
 	if err != nil {
-		return domain.PrepareResult{}, err
+		return domain.EVMPayload{}, domain.Fee{}, nil, err
 	}
-	// 估算值再留 20%。代币转账的真实消耗常比 eth_estimateGas 略高。
+	// 估算值再留 20%。合约调用的真实消耗常比 eth_estimateGas 略高。
 	gas = new(big.Int).Mul(gas, big.NewInt(12))
 	gas.Div(gas, big.NewInt(10))
 	if gas.Cmp(big.NewInt(2_000_000)) > 0 {
 		warnings = append(warnings, "估算的 gas 很高，先确认没有转到错误的合约。")
 	}
-
 	gasPriceRaw, err := c.call(ctx, "eth_gasPrice", []any{})
 	if err != nil {
-		return domain.PrepareResult{}, err
+		return domain.EVMPayload{}, domain.Fee{}, nil, err
 	}
 	gasPrice, err := parseHex(gasPriceRaw)
 	if err != nil {
-		return domain.PrepareResult{}, err
+		return domain.EVMPayload{}, domain.Fee{}, nil, err
 	}
 	tip := new(big.Int).Div(new(big.Int).Set(gasPrice), big.NewInt(10))
 	if tipRaw, tipErr := c.call(ctx, "eth_maxPriorityFeePerGas", []any{}); tipErr == nil {
@@ -136,54 +160,52 @@ func (c *Client) Prepare(ctx context.Context, from, to, amount string, units *bi
 		tip = new(big.Int).Set(maxFee)
 	}
 	feeWei := new(big.Int).Mul(gas, maxFee)
-
 	nonceRaw, err := c.call(ctx, "eth_getTransactionCount", []any{from, "pending"})
 	if err != nil {
-		return domain.PrepareResult{}, err
+		return domain.EVMPayload{}, domain.Fee{}, nil, err
 	}
 	nonce, err := parseHex(nonceRaw)
 	if err != nil {
-		return domain.PrepareResult{}, err
+		return domain.EVMPayload{}, domain.Fee{}, nil, err
 	}
-	chainRaw, err := c.call(ctx, "eth_chainId", []any{})
+	chainID, err := c.ChainID(ctx)
 	if err != nil {
-		return domain.PrepareResult{}, err
+		return domain.EVMPayload{}, domain.Fee{}, nil, err
 	}
-	chainID, err := parseHex(chainRaw)
+	warnings = append(warnings, "报价来自节点。用户交易在浏览器签名，服务器看不到那把私钥。")
+	payload := domain.EVMPayload{
+		Type:                 2,
+		ChainID:              chainID.String(),
+		Nonce:                nonce.String(),
+		To:                   to,
+		Value:                value.String(),
+		Data:                 data,
+		GasLimit:             gas.String(),
+		MaxFeePerGas:         maxFee.String(),
+		MaxPriorityFeePerGas: tip.String(),
+	}
+	if payload.Data == "" {
+		payload.Data = "0x"
+	}
+	fee := domain.Fee{
+		Symbol: domain.NativeSymbol(c.chain),
+		Amount: domain.FormatUnits(feeWei, 18),
+		Detail: map[string]string{
+			"gasLimit":             gas.String(),
+			"maxFeePerGas":         maxFee.String(),
+			"maxPriorityFeePerGas": tip.String(),
+		},
+	}
+	return payload, fee, warnings, nil
+}
+
+// 读取这条链的 chainId。
+func (c *Client) ChainID(ctx context.Context) (*big.Int, error) {
+	raw, err := c.call(ctx, "eth_chainId", []any{})
 	if err != nil {
-		return domain.PrepareResult{}, err
+		return nil, err
 	}
-	warnings = append(warnings, "报价来自节点。签名在浏览器完成，服务器看不到私钥。")
-	return domain.PrepareResult{
-		Chain:   c.chain,
-		Network: c.network,
-		Mode:    "live",
-		Asset:   asset.Symbol,
-		From:    from,
-		To:      to,
-		Amount:  amount,
-		Fee: domain.Fee{
-			Symbol: domain.NativeSymbol(c.chain),
-			Amount: domain.FormatUnits(feeWei, 18),
-			Detail: map[string]string{
-				"gasLimit":             gas.String(),
-				"maxFeePerGas":         maxFee.String(),
-				"maxPriorityFeePerGas": tip.String(),
-			},
-		},
-		Payload: domain.EVMPayload{
-			Type:                 2,
-			ChainID:              chainID.String(),
-			Nonce:                nonce.String(),
-			To:                   target,
-			Value:                value.String(),
-			Data:                 data,
-			GasLimit:             gas.String(),
-			MaxFeePerGas:         maxFee.String(),
-			MaxPriorityFeePerGas: tip.String(),
-		},
-		Warnings: warnings,
-	}, nil
+	return parseHex(raw)
 }
 
 // 调用 eth_sendRawTransaction 广播已签名交易。

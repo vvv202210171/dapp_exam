@@ -12,6 +12,7 @@ export function Setup() {
   const wallet = useWallet();
   const initial = params.get("mode") === "import" ? "import" : "show";
   const [mnemonic, setMnemonic] = useState(() => (initial === "import" ? "" : createMnemonic()));
+  // 状态机：显示助记词、核对助记词、导入助记词、设置密码。
   const [stage, setStage] = useState<"show" | "check" | "import" | "password">(initial === "import" ? "import" : "show");
   const [picks] = useState(() => sampleIndexes());
   const [answers, setAnswers] = useState<Record<number, string>>({});

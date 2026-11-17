@@ -3,7 +3,9 @@ import { useEffect, useState } from "react";
 import { Link, useLocation, useParams } from "react-router-dom";
 import { api } from "../api";
 import { Fault, Field } from "../components/ui";
-import type { Bill, Card, LedgerEntry } from "../types";
+import { useSession } from "../session";
+import type { Bill, Card, LedgerEntry, SettlementQuote, SettlementView } from "../types";
+import { connectMetamask, sendWithMetamask, waitForReceipt } from "../wallet/metamask";
 
 const STATUS: Record<string, string> = {
   active: "可使用", frozen: "已冻结", requested: "待制卡", issued: "已制卡", shipped: "已寄出", closed: "已注销",
@@ -20,6 +22,7 @@ const NEXT: Record<string, { action: string; label: string }[]> = {
 // 一张卡的余额、状态流转、充值、消费、提现和账单。
 export function CardDetail() {
   const { id = "" } = useParams();
+  const session = useSession();
   const location = useLocation();
   const issued = location.state as { pan?: string; cvv?: string } | null;
   const [card, setCard] = useState<Card | null>(null);
@@ -29,6 +32,7 @@ export function CardDetail() {
   const [amount, setAmount] = useState("25.00");
   const [merchant, setMerchant] = useState("星巴克");
   const [error, setError] = useState<unknown>(null);
+  const [busy, setBusy] = useState(false);
   const [key, setKey] = useState(crypto.randomUUID());
 
   // 读取卡的展示信息。
@@ -42,6 +46,53 @@ export function CardDetail() {
   useEffect(() => {
     void Promise.all([loadCard(), loadBill()]).catch(setError);
   }, [id]);
+
+// 美元字符串按 6 位小数比较，用来判断授权额够不够这次存入。
+function usdcUnits(value: string): bigint {
+  const [whole, frac = ""] = (value.trim() || "0").split(".");
+  return BigInt(`${whole || "0"}${(frac + "000000").slice(0, 6)}`);
+}
+
+  // 小狐狸把 USDC 划进结算合约，服务端核对回执后才给卡加余额。
+  async function fundCard() {
+    setBusy(true);
+    setError(null);
+    try {
+      const fox = await connectMetamask();
+      const expected = session.derived.ethereum.address;
+      if (fox.toLowerCase() !== expected.toLowerCase()) {
+        throw new Error(`小狐狸当前是 ${fox}。请换成 ${expected}。`);
+      }
+      const view = await api<SettlementView>(`/api/v1/accounts/${session.accountId}/settlement`);
+      if (!view.online) throw new Error(view.hint || "结算链没有连上。");
+      if (usdcUnits(view.allowance ?? "0") < usdcUnits(amount)) {
+        await sendAction(fox, "approve", amount);
+      }
+      const hash = await sendAction(fox, "deposit", amount);
+      await api(`/api/v1/cards/${id}/topup`, { method: "POST", body: JSON.stringify({ amount, txHash: hash }) });
+      await loadCard();
+      await loadBill();
+    } catch (err) {
+      setError(err);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // 向结算接口报价，再交给小狐狸签名广播。
+  async function sendAction(from: string, action: "approve" | "deposit", value: string) {
+    const quote = await api<SettlementQuote>(`/api/v1/accounts/${session.accountId}/settlement/prepare`, {
+      method: "POST",
+      body: JSON.stringify({ action, amount: value }),
+    });
+    const payload = quote.payload as {
+      to: string; value: string; data: string; gasLimit: string;
+      maxFeePerGas: string; maxPriorityFeePerGas: string; nonce: string;
+    };
+    const hash = await sendWithMetamask(from, payload);
+    await waitForReceipt(hash);
+    return hash;
+  }
 
   // 提交一次动账或状态变更。成功后才更换幂等键。
   async function run(path: string, body: Record<string, string>) {
@@ -89,10 +140,11 @@ export function CardDetail() {
         </div>
       </div>
       <div className="two" style={{ marginTop: 18 }}>
-        <form className="sheet stack" onSubmit={(event) => { event.preventDefault(); void run(`/api/v1/cards/${id}/topup`, { amount }); }}>
+        <form className="sheet stack" onSubmit={(event) => { event.preventDefault(); void fundCard(); }}>
           <h2>充值</h2>
           <Field label="金额 USD"><input value={amount} onChange={(event) => setAmount(event.target.value)} /></Field>
-          <button className="primary" type="submit">记一笔充值</button>
+          <p className="muted">小狐狸先把同样金额的 USDC 划进结算合约。链上确认后，卡余额才加上这笔钱。授权不够或拒绝签名，卡余额不变。</p>
+          <button className="primary" type="submit" disabled={busy}>{busy ? "等待小狐狸确认…" : "划入 USDC 并入账"}</button>
           <button className="ghost" type="button" onClick={() => void run(`/api/v1/cards/${id}/withdraw`, { amount })}>提现（另收 1%）</button>
         </form>
         <form className="sheet stack" onSubmit={(event) => { event.preventDefault(); void run(`/api/v1/cards/${id}/spend`, { amount, merchant, mcc: "5814" }); }}>

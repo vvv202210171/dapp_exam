@@ -286,6 +286,80 @@ func (s *Store) ListEntries(ctx context.Context, cardID string) ([]domain.Ledger
 	return out, rows.Err()
 }
 
+// SpendRecord 是一笔卡消费，带上卡的账户和链上结算交易。
+type SpendRecord struct {
+	Entry     domain.LedgerEntry
+	AccountID string
+	Last4     string
+	TxHash    string
+}
+
+// 列出某账户全部消费，并带上已经结算的交易哈希。
+func (s *Store) AccountSpends(ctx context.Context, accountID string) ([]SpendRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT e.id, e.card_id, e.kind, e.amount, e.balance_after, e.merchant, e.mcc, e.ref, e.note, e.created_at,
+		       c.account_id, c.last4, IFNULL(st.tx_hash, '')
+		FROM ledger_entries e
+		JOIN cards c ON c.id = e.card_id
+		LEFT JOIN settlements st ON st.entry_id = e.id
+		WHERE c.account_id = ? AND e.kind = 'spend'
+		ORDER BY e.created_at DESC, e.rowid DESC
+	`, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SpendRecord
+	for rows.Next() {
+		rec, err := scanSpend(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, rec)
+	}
+	if out == nil {
+		out = []SpendRecord{}
+	}
+	return out, rows.Err()
+}
+
+// 读取属于这个账户的一笔消费。别的账户的流水按不存在处理。
+func (s *Store) SpendForAccount(ctx context.Context, accountID, entryID string) (SpendRecord, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT e.id, e.card_id, e.kind, e.amount, e.balance_after, e.merchant, e.mcc, e.ref, e.note, e.created_at,
+		       c.account_id, c.last4, IFNULL(st.tx_hash, '')
+		FROM ledger_entries e
+		JOIN cards c ON c.id = e.card_id
+		LEFT JOIN settlements st ON st.entry_id = e.id
+		WHERE e.id = ? AND c.account_id = ? AND e.kind = 'spend'
+	`, entryID, accountID)
+	rec, err := scanSpend(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SpendRecord{}, domain.E("NOT_FOUND", "没有这笔消费", "只能结算当前账户卡片上的消费流水。")
+	}
+	return rec, err
+}
+
+// 查这把幂等键有没有已经给某张卡充过值。没有则返回空字符串。
+func (s *Store) TopupCardByRef(ctx context.Context, ref string) (string, error) {
+	var cardID string
+	err := s.db.QueryRowContext(ctx, `SELECT card_id FROM ledger_entries WHERE ref = ? AND kind = 'topup' LIMIT 1`, ref).Scan(&cardID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return cardID, err
+}
+
+// 记下某笔消费已经在链上结算。重复写入保持第一次的交易哈希。
+func (s *Store) PutSettlement(ctx context.Context, entryID, accountID, txHash, units string) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO settlements(entry_id, account_id, tx_hash, units, created_at)
+		VALUES(?,?,?,?,?)
+		ON CONFLICT(entry_id) DO NOTHING
+	`, entryID, accountID, txHash, units, time.Now().UnixMilli())
+	return err
+}
+
 type Draft struct {
 	Kind     string
 	Amount   int64
@@ -499,6 +573,24 @@ func scanEntry(row scanner) (domain.LedgerEntry, error) {
 	return e, nil
 }
 
+// 把消费查询扫成流水、账户和结算哈希。
+func scanSpend(row scanner) (SpendRecord, error) {
+	var rec SpendRecord
+	var amount, after, created int64
+	err := row.Scan(
+		&rec.Entry.ID, &rec.Entry.CardID, &rec.Entry.Kind, &amount, &after,
+		&rec.Entry.Merchant, &rec.Entry.MCC, &rec.Entry.Ref, &rec.Entry.Note, &created,
+		&rec.AccountID, &rec.Last4, &rec.TxHash,
+	)
+	if err != nil {
+		return SpendRecord{}, err
+	}
+	rec.Entry.Amount = domain.Cents(amount)
+	rec.Entry.BalanceAfter = domain.Cents(after)
+	rec.Entry.CreatedAt = time.UnixMilli(created).UTC()
+	return rec, nil
+}
+
 // 给五条链排一个固定顺序，方便列表展示。
 func chainRank(id domain.ChainID) int {
 	switch id {
@@ -597,4 +689,11 @@ CREATE TABLE IF NOT EXISTS ledger_entries (
 	UNIQUE (card_id, ref)
 );
 CREATE INDEX IF NOT EXISTS idx_ledger_card ON ledger_entries(card_id, created_at);
+CREATE TABLE IF NOT EXISTS settlements (
+	entry_id TEXT PRIMARY KEY,
+	account_id TEXT NOT NULL,
+	tx_hash TEXT NOT NULL,
+	units TEXT NOT NULL,
+	created_at INTEGER NOT NULL
+);
 `

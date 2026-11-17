@@ -123,6 +123,26 @@ type MoveInput struct {
 	IdempotencyKey string
 }
 
+// 用链上存入交易的哈希给卡入账。同一笔哈希不能给第二张卡加余额。
+func (s *CardService) CreditDeposit(ctx context.Context, cardID string, in MoveInput) (domain.MoveResult, error) {
+	ref := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(in.IdempotencyKey)), "0x")
+	if ref == "" {
+		return domain.MoveResult{}, domain.E("INVALID_ARGUMENT", "缺少存入交易", "先在小狐狸里把 USDC 划进结算合约。")
+	}
+	other, err := s.store.TopupCardByRef(ctx, ref)
+	if err != nil {
+		return domain.MoveResult{}, err
+	}
+	if other != "" && other != cardID {
+		return domain.MoveResult{}, domain.E("CONFLICT", "这笔存入已经入过账", "同一笔链上存入只能给一张卡加余额。")
+	}
+	in.IdempotencyKey = ref
+	if strings.TrimSpace(in.Note) == "" {
+		in.Note = "USDC 已存入结算合约"
+	}
+	return s.Topup(ctx, cardID, in)
+}
+
 // 给卡充值。注销后的卡不能充。
 func (s *CardService) Topup(ctx context.Context, cardID string, in MoveInput) (domain.MoveResult, error) {
 	amount, ref, err := moneyRef(in)
