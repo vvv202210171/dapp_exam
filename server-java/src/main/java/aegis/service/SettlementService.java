@@ -1,16 +1,16 @@
 package aegis.service;
 
+import aegis.chain.evm.SettlementRpc;
+import aegis.chain.evm.SettlementRpcs;
+import aegis.config.Config;
 import aegis.dao.AccountDao;
 import aegis.dao.SettlementDao;
 import aegis.domain.Models.AppError;
 import aegis.domain.Models.Cents;
-import aegis.domain.Models.EvmPayload;
-import aegis.domain.Models.Fee;
 import aegis.domain.Money;
 import aegis.platform.Support;
 import aegis.txbuild.TxBuild;
 import org.springframework.stereotype.Service;
-import com.fasterxml.jackson.databind.JsonNode;
 import java.math.BigInteger;
 import java.net.URI;
 import java.nio.file.Files;
@@ -30,16 +30,23 @@ public class SettlementService {
     private final AccountDao accounts;
     private final SettlementDao settlements;
     private final Support.HttpJson http;
+    private final String chainClient;
+    private final String settlementFile;
+    private final String settlementRpc;
 
     /**
      * @param accounts 账户数据访问
      * @param settlements 消费和结算记录
-     * @param http JSON-RPC 客户端
+     * @param http 手写 JSON-RPC 用的 HTTP 客户端
+     * @param config 模式、结算客户端、部署文件和结算节点
      */
-    public SettlementService(AccountDao accounts, SettlementDao settlements, Support.HttpJson http) {
+    public SettlementService(AccountDao accounts, SettlementDao settlements, Support.HttpJson http, Config config) {
         this.accounts = accounts;
         this.settlements = settlements;
         this.http = http;
+        this.chainClient = config.chainClient;
+        this.settlementFile = config.settlementFile;
+        this.settlementRpc = config.settlementRpc;
     }
 
     /**
@@ -98,12 +105,12 @@ public class SettlementService {
             case "withdraw" -> { to = sess.dep.settlement; data = Abi.withdraw(sess.dep.usdc, units); }
             default -> throw AppError.of("INVALID_ARGUMENT", "不支持这个动作", "用户只能授权、存入或提现。结算由服务端的运营方账户发送。");
         }
-        Quoted quoted = sess.rpc.quote(user, to, data);
+        SettlementRpc.Quote quoted = sess.rpc.quote(user, to, data);
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("action", action);
         out.put("amount", Money.formatUnits(units, 6));
-        out.put("payload", quoted.payload);
-        out.put("fee", quoted.fee);
+        out.put("payload", quoted.payload());
+        out.put("fee", quoted.fee());
         out.put("warnings", List.of("签名在浏览器完成，服务器看不到私钥。", "chainId 是 31337。这笔交易签给本地链，不能在主网重放。"));
         return out;
     }
@@ -166,10 +173,10 @@ public class SettlementService {
         Session sess = open();
         String status = sess.rpc.wait(hash);
         if (!"confirmed".equals(status)) throw AppError.of("RPC_TIMEOUT", "存入交易还没有成功回执", "在小狐狸里确认交易已经上链，再给卡入账。");
-        Tx tx = sess.rpc.transaction(hash);
-        if (!tx.from.equalsIgnoreCase(user)) throw AppError.of("INVALID_ARGUMENT", "这笔存入不是当前账户发出的", "小狐狸要选这个钱包的以太坊地址。");
-        if (!tx.to.equalsIgnoreCase(sess.dep.settlement)) throw AppError.of("INVALID_ARGUMENT", "这笔交易没有打到结算合约", "只有 deposit 进结算合约才能给卡入账。");
-        Deposit parsed = Abi.parseDeposit(tx.input);
+        SettlementRpc.Tx tx = sess.rpc.transaction(hash);
+        if (!tx.from().equalsIgnoreCase(user)) throw AppError.of("INVALID_ARGUMENT", "这笔存入不是当前账户发出的", "小狐狸要选这个钱包的以太坊地址。");
+        if (!tx.to().equalsIgnoreCase(sess.dep.settlement)) throw AppError.of("INVALID_ARGUMENT", "这笔交易没有打到结算合约", "只有 deposit 进结算合约才能给卡入账。");
+        Deposit parsed = Abi.parseDeposit(tx.input());
         if (!parsed.token.equalsIgnoreCase(sess.dep.usdc)) throw AppError.of("INVALID_ARGUMENT", "存入的不是结算用的 USDC", "");
         if (parsed.amount.compareTo(Abi.centsToUnits(cents)) != 0) throw AppError.of("INVALID_ARGUMENT", "链上存入金额和要入账的美元不一致", "卡加多少钱，合约里就要存入多少 USDC。");
     }
@@ -239,7 +246,7 @@ public class SettlementService {
         Deployment dep = loadDeployment();
         if (dep.chainId != LOCAL_CHAIN) throw AppError.of("INVALID_ARGUMENT", "结算部署文件里的 chainId 不是 31337", "只连接本地 Hardhat。不要把这份配置指到主网或测试网。");
         if (!loopback(dep.rpc)) throw AppError.of("INVALID_ARGUMENT", "结算节点必须在本机", "只接受 127.0.0.1 或 localhost。运营方交易走节点里解锁的账户，不能指到公网 RPC。");
-        Rpc rpc = new Rpc(dep.rpc, http);
+        SettlementRpc rpc = SettlementRpcs.open(chainClient, dep.rpc, http);
         BigInteger id;
         try { id = rpc.chainId(); }
         catch (RuntimeException e) { throw AppError.of("RPC_UNREACHABLE", "本地结算链没有打开", "在 contracts 目录执行 npx hardhat node，另开一个终端执行 npm run deploy，然后刷新。"); }
@@ -277,12 +284,12 @@ public class SettlementService {
     }
 
     /**
-     * 读取本地部署文件。环境变量 SETTLEMENT_FILE 和 SETTLEMENT_RPC 可以覆盖路径和节点。
+     * 读取本地部署文件。适配器的节点和部署文件来自 application.properties。
      *
      * @return 部署信息
      */
-    static Deployment loadDeployment() {
-        String path = System.getenv("SETTLEMENT_FILE");
+    private Deployment loadDeployment() {
+        String path = settlementFile;
         if (path == null || path.isBlank()) {
             Path chosen = Path.of("..", "contracts", "deployments", "local.json");
             for (Path candidate : List.of(chosen, Path.of("contracts", "deployments", "local.json"))) {
@@ -292,8 +299,7 @@ public class SettlementService {
         }
         try {
             Deployment dep = Support.JSON.readValue(Files.readString(Path.of(path)), Deployment.class);
-            String rpc = System.getenv("SETTLEMENT_RPC");
-            if (rpc != null && !rpc.isBlank()) dep.rpc = rpc.trim();
+            if (settlementRpc != null && !settlementRpc.isBlank()) dep.rpc = settlementRpc.trim();
             if (dep.rpc == null || dep.settlement == null || dep.usdc == null || dep.operator == null || dep.rpc.isBlank() || dep.settlement.isBlank() || dep.usdc.isBlank() || dep.operator.isBlank()) {
                 throw AppError.of("INVALID_ARGUMENT", "部署文件缺少地址", "重新执行 npm run deploy。");
             }
@@ -354,24 +360,7 @@ public class SettlementService {
      * @param dep 部署信息
      * @param rpc 节点客户端
      */
-    private record Session(Deployment dep, Rpc rpc) {}
-
-    /**
-     * 报价结果。
-     *
-     * @param payload 未签名交易
-     * @param fee 手续费
-     */
-    private record Quoted(EvmPayload payload, Fee fee) {}
-
-    /**
-     * 链上交易的发送方、接收方和输入数据。
-     *
-     * @param from 发送地址
-     * @param to 接收地址
-     * @param input calldata
-     */
-    private record Tx(String from, String to, String input) {}
+    private record Session(Deployment dep, SettlementRpc rpc) {}
 
     /**
      * 从 deposit calldata 解出的代币和数量。
@@ -549,184 +538,4 @@ public class SettlementService {
         }
     }
 
-    /**
-     * 本地 Hardhat 节点的 JSON-RPC。运营方交易用 eth_sendTransaction，因为账户在节点里解锁。
-     */
-    static final class Rpc {
-        final String url;
-        final Support.HttpJson http;
-        /**
-         * @param url 节点地址
-         * @param http HTTP 客户端
-         */
-        Rpc(String url, Support.HttpJson http) { this.url = url; this.http = http; }
-
-        /**
-         * 读取 chainId。
-         *
-         * @return 链编号
-         */
-        BigInteger chainId() { return Evmish.parse(call("eth_chainId", List.of())); }
-
-        /**
-         * 读取地址上的合约代码。
-         *
-         * @param address 合约地址
-         * @return 代码十六进制，空合约通常是 0x
-         */
-        String code(String address) { return text(call("eth_getCode", List.of(address, "latest"))); }
-
-        /**
-         * 读取原生 ETH 余额。
-         *
-         * @param address 地址
-         * @return wei
-         */
-        BigInteger nativeBalance(String address) { return Evmish.parse(call("eth_getBalance", List.of(address, "latest"))); }
-
-        /**
-         * 执行 eth_call，并把结果当成 uint256。
-         *
-         * @param to 合约地址
-         * @param data calldata
-         * @return 返回值
-         */
-        BigInteger callUint(String to, String data) { return Evmish.parse(call("eth_call", List.of(Map.of("to", to, "data", data), "latest"))); }
-
-        /**
-         * 估算 gas，并取 pending nonce，组装 EIP-1559 载荷。
-         *
-         * @param from 发送地址
-         * @param to 接收地址
-         * @param data calldata
-         * @return 未签名载荷和手续费
-         */
-        Quoted quote(String from, String to, String data) {
-            Map<String, String> call = Map.of("from", from, "to", to, "data", data);
-            BigInteger gas = Evmish.parse(call("eth_estimateGas", List.of(call))).multiply(BigInteger.valueOf(12)).divide(BigInteger.TEN);
-            BigInteger gasPrice = Evmish.parse(call("eth_gasPrice", List.of()));
-            BigInteger tip = gasPrice.divide(BigInteger.TEN);
-            try {
-                BigInteger parsed = Evmish.parse(call("eth_maxPriorityFeePerGas", List.of()));
-                if (parsed.signum() > 0) tip = parsed;
-            } catch (Exception ignored) {}
-            BigInteger maxFee = gasPrice.multiply(BigInteger.TWO).add(tip);
-            if (tip.compareTo(maxFee) > 0) tip = maxFee;
-            BigInteger nonce = Evmish.parse(call("eth_getTransactionCount", List.of(from, "pending")));
-            EvmPayload payload = new EvmPayload();
-            payload.type = 2;
-            payload.chainId = chainId().toString();
-            payload.nonce = nonce.toString();
-            payload.to = to;
-            payload.value = "0";
-            payload.data = data;
-            payload.gasLimit = gas.toString();
-            payload.maxFeePerGas = maxFee.toString();
-            payload.maxPriorityFeePerGas = tip.toString();
-            return new Quoted(payload, aegis.chain.Chains.fee("ETH", Money.formatUnits(gas.multiply(maxFee), 18), Map.of(
-                    "gasLimit", gas.toString(), "maxFeePerGas", maxFee.toString(), "maxPriorityFeePerGas", tip.toString())));
-        }
-
-        /**
-         * 按哈希读取交易。
-         *
-         * @param hash 交易哈希
-         * @return 发送方、接收方和 input
-         */
-        Tx transaction(String hash) {
-            JsonNode raw = call("eth_getTransactionByHash", List.of(hash));
-            if (raw == null || raw.isNull()) throw AppError.of("NOT_FOUND", "节点上看不到这笔交易", "等小狐狸广播完成后再入账。");
-            return new Tx(raw.path("from").asText(""), raw.path("to").asText(""), raw.path("input").asText(""));
-        }
-
-        /**
-         * 广播已签名交易。
-         *
-         * @param signed 原始交易十六进制
-         * @return 交易哈希
-         */
-        String sendRaw(String signed) {
-            if (!signed.startsWith("0x")) signed = "0x" + signed;
-            String hash = text(call("eth_sendRawTransaction", List.of(signed)));
-            if (hash.isEmpty()) throw new RuntimeException("节点没有返回交易哈希");
-            return hash;
-        }
-
-        /**
-         * 用节点里解锁的账户发送交易。
-         *
-         * @param from 运营方地址
-         * @param to 接收地址
-         * @param value 转出的 wei，空表示 0
-         * @param data calldata，空表示没有
-         * @return 交易哈希
-         */
-        String sendFrom(String from, String to, String value, String data) {
-            Map<String, String> tx = new LinkedHashMap<>();
-            tx.put("from", from);
-            tx.put("to", to);
-            if (value != null && !value.isEmpty() && !"0x0".equals(value)) tx.put("value", value);
-            if (data != null && !data.isEmpty() && !"0x".equals(data)) tx.put("data", data);
-            BigInteger gas = Evmish.parse(call("eth_estimateGas", List.of(tx))).multiply(BigInteger.valueOf(12)).divide(BigInteger.TEN);
-            tx.put("gas", Support.quantityHex(gas));
-            return text(call("eth_sendTransaction", List.of(tx)));
-        }
-
-        /**
-         * 等回执最多 8 秒。成功返回 confirmed，超时返回 pending，失败抛出回滚错误。
-         *
-         * @param hash 交易哈希
-         * @return confirmed 或 pending
-         */
-        String wait(String hash) {
-            long deadline = System.currentTimeMillis() + 8_000;
-            while (true) {
-                JsonNode raw = call("eth_getTransactionReceipt", List.of(hash));
-                if (raw != null && !raw.isNull() && !raw.isMissingNode()) {
-                    String status = raw.path("status").asText("");
-                    if ("0x1".equals(status)) return "confirmed";
-                    throw AppError.of("REVERTED", "交易已上链但执行失败", "常见原因：没 approve、USDC 不够、链上可用余额不够，或这张账单已经结算过。");
-                }
-                if (System.currentTimeMillis() > deadline) return "pending";
-                try { Thread.sleep(250); } catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new RuntimeException(e); }
-            }
-        }
-
-        /**
-         * 发送一次 JSON-RPC。
-         *
-         * @param method 方法名
-         * @param params 参数
-         * @return result 节点
-         */
-        private JsonNode call(String method, Object params) {
-            JsonNode envelope = http.postJson(url, Support.rpcBody(method, params));
-            if (envelope.has("error") && !envelope.get("error").isNull()) {
-                throw new RuntimeException(method + ": " + envelope.path("error").path("message").asText(""));
-            }
-            return envelope.get("result");
-        }
-
-        /**
-         * 把 JSON 文本节点转成字符串。
-         *
-         * @param raw JSON 节点
-         * @return 文本，空节点时为空字符串
-         */
-        private static String text(JsonNode raw) { return raw == null || raw.isNull() ? "" : raw.asText(""); }
-    }
-
-    /**
-     * 把以太坊十六进制数量解析成整数。
-     */
-    static final class Evmish {
-        /**
-         * @param raw JSON-RPC 返回的十六进制或数字
-         * @return 整数，空值时为 0
-         */
-        static BigInteger parse(JsonNode raw) {
-            if (raw == null || raw.isNull()) return BigInteger.ZERO;
-            return Support.hexToInt(raw.asText(raw.toString().replace("\"", "")));
-        }
-    }
 }

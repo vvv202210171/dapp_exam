@@ -343,7 +343,11 @@ public final class Support {
      * 超时 12 秒的 JSON 和文本 HTTP 客户端。
      */
     public static final class HttpJson {
-        private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(12)).build();
+        // Hardhat 不接受 Java 默认的 HTTP/2 升级请求，会直接回 400。本地结算节点走 HTTP/1.1。
+        private final HttpClient http = HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_1_1)
+                .connectTimeout(Duration.ofSeconds(12))
+                .build();
 
         /**
          * POST JSON 并解析响应。

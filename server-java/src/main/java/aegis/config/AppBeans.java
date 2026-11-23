@@ -9,6 +9,7 @@ import java.util.Arrays;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.Environment;
 
 /**
  * Spring 启动类。业务对象由注解扫描，这里只组装配置、数据库和链客户端。
@@ -16,11 +17,12 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 public class AppBeans {
     /**
-     * @return 从环境变量读出的配置
+     * @param env Spring 环境，包含 application.properties
+     * @return 配置
      */
     @Bean
-    Config config() {
-        return Config.load();
+    Config config(Environment env) {
+        return Config.load(env);
     }
 
     /**
@@ -59,7 +61,7 @@ public class AppBeans {
     @Bean
     CardKey cardKey(Config cfg) {
         byte[] key = loadKey(cfg);
-        if (System.getenv("CARD_KEY") == null || System.getenv("CARD_KEY").isBlank()) {
+        if (cfg.cardKey == null || cfg.cardKey.isBlank()) {
             System.out.println("card encryption key is a local file; production would use a KMS path=" + cfg.keyPath);
         }
         return new CardKey(key);
@@ -73,7 +75,7 @@ public class AppBeans {
      */
     @Bean
     ApplicationRunner started(Config cfg) {
-        return args -> System.out.printf("aegis-java listening addr=%s mode=%s network=%s%n", cfg.addr, cfg.mode, cfg.network);
+        return args -> System.out.printf("aegis-java listening addr=%s mode=%s network=%s chainClient=%s%n", cfg.addr, cfg.mode, cfg.network, cfg.chainClient);
     }
 
     /**

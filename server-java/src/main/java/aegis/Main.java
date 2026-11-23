@@ -4,7 +4,7 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 /**
- * Spring Boot 入口。ADDR 仍沿用 Go 的 :8080 写法。
+ * Spring Boot 入口。端口写在 application.properties 的 server.port。设了 ADDR 时仍按 Go 的 :8080 写法覆盖。
  */
 @SpringBootApplication
 public class Main {
@@ -19,11 +19,11 @@ public class Main {
     }
 
     /**
-     * 把 ADDR 转成 Spring 的 server.port 和 server.address。
+     * ADDR 有值时转成 Spring 的 server.port 和 server.address。没设则用配置文件里的端口。
      */
     static void applyAddr() {
         String addr = System.getenv("ADDR");
-        if (addr == null || addr.isBlank()) addr = ":8080";
+        if (addr == null || addr.isBlank()) return;
         String host = "";
         String port;
         if (addr.startsWith(":")) {
