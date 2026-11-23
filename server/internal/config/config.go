@@ -30,7 +30,7 @@ func Load() (Config, error) {
 	if network != "testnet" && network != "mainnet" {
 		return Config{}, fmt.Errorf("NETWORK 只能是 testnet 或 mainnet")
 	}
-	dataDir := getenv("DATA_DIR", "data")
+	dataDir := getenv("DATA_DIR", defaultDataDir())
 	dbPath := getenv("DB_PATH", filepath.Join(dataDir, "aegis.db"))
 	rpcs := defaultRPCs(network)
 	if v := os.Getenv("ETH_RPC"); strings.TrimSpace(v) != "" {
@@ -57,6 +57,29 @@ func Load() (Config, error) {
 		CardKey: os.Getenv("CARD_KEY"),
 		RPCs:    rpcs,
 	}, nil
+}
+
+// 没设 DATA_DIR 时，Go 和 Java 都用仓库里的 server/data。从 server 或 server-java 启动也能找到。
+func defaultDataDir() string {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "data"
+	}
+	for {
+		if isDir(filepath.Join(dir, "server")) && isDir(filepath.Join(dir, "server-java")) {
+			return filepath.Join(dir, "server", "data")
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "data"
+		}
+		dir = parent
+	}
+}
+
+func isDir(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }
 
 // 读取环境变量，空白时用默认值。

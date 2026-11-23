@@ -36,7 +36,7 @@ Solidity CardSettlement
 | --- | --- |
 | `web/` | React 钱包。保险库、派生、签名、页面 |
 | `server/` | Go API。适配器、SQLite、卡账本 |
-| `server-java/` | 同一套 `/api/v1` 的 Spring Boot 版，按 Controller、Service、DAO 分层。和 Go 二选一，都监听 8080 |
+| `server-java/` | 同一套 `/api/v1` 的 Spring Boot 版，按 Controller、Service、DAO 分层。和 Go 共用 `server/data` 里的库，不要同时监听 8080 |
 | `contracts/` | Hardhat 合约和测试 |
 | `docs/interview.md` | 面试时可以怎么讲 |
 | `docs/settlement.md` | 链上结算每一步的操作逻辑和原因 |
@@ -60,7 +60,7 @@ npm run dev
 
 打开 http://localhost:5173 。
 
-Java 版是 Spring Boot，接口和 Go 版相同，数据目录分开，不要同时占 8080。本机没有 Maven 时 `build.ps1` 会自己下载：
+Java 版是 Spring Boot，接口和 Go 版相同。两边默认都读写 `server/data/aegis.db`，卡号密钥也是同一份 `server/data/card.key`。不要同时启动：端口都是 8080，SQLite 也不能两个进程一起写。本机没有 Maven 时 `build.ps1` 会自己下载：
 
 ```powershell
 cd server-java
@@ -117,7 +117,7 @@ $env:NETWORK="testnet"   # 或 mainnet，主网只做小额
 go run ./cmd/api
 ```
 
-可用 `ETH_RPC`、`BNB_RPC`、`SOL_RPC`、`TRON_RPC`、`BTC_API` 换掉默认公共节点。`CARD_KEY` 是 64 位十六进制；不设的话会写到 `data/card.key`。
+Go 仍用环境变量：`ETH_RPC`、`BNB_RPC`、`SOL_RPC`、`TRON_RPC`、`BTC_API` 换节点，`CARD_KEY` 不设就读写 `server/data/card.key`，`DATA_DIR` 另开一份库。Java 的同一批配置在 `server-java/src/main/resources/application.properties`。接口监听是 `server.address` 和 `server.port`。结算适配器是 `aegis.adapter.settlement`（`http` 或 `web3j`）和 `aegis.adapter.settlement.rpc`。五条链适配器的节点在 `aegis.adapter.testnet.*` 和 `aegis.adapter.mainnet.*`。同名环境变量如果还设着，会盖过文件。
 
 `MODE=sandbox` 时价格是写死的。`MODE=live` 会试着读 CoinGecko，失败就退回静态价格。
 
