@@ -39,8 +39,11 @@ export function nextAddress(chain: Chain) {
 
 // 拉取网络配置，派生五条链地址，同步账户，必要时把助记词封进保险库。
 async function enter(mnemonic: string, label: string, password?: string) {
+  // 拉取网络配置。
   const meta = await api<Meta>("/api/v1/meta");
+  // 派生五条链地址。
   const derived = deriveAll(mnemonic, meta.network);
+  // 同步账户。
   const account = await api<Account>("/api/v1/accounts/sync", {
     method: "POST",
     body: JSON.stringify({
@@ -52,6 +55,8 @@ async function enter(mnemonic: string, label: string, password?: string) {
       })),
     }),
   });
+  // 必要时把助记词封进保险库。
   if (password) await sealVault(password, mnemonic, label);
+  // 设置会话。
   wallet.session = { label: account.label, mnemonic, accountId: account.id, meta, derived };
 }

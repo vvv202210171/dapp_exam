@@ -1,0 +1,14 @@
+details > summary {
+  cursor: pointer;
+  display: list-item;
+  list-style: disclosure-closed inside;
+  font-weight: 600;
+}
+
+details[open] > summary {
+  list-style: disclosure-open inside;
+}
+
+details:not([open]) > :not(summary) {
+  display: none !important;
+}

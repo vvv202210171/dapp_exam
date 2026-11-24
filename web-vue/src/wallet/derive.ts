@@ -28,7 +28,7 @@ export function normalizeMnemonic(value: string): string {
   return value.trim().toLowerCase().split(/\s+/).filter(Boolean).join(" ");
 }
 
-// 生成 12 个英文助记词。
+// 生成 12 个英文助记词。128是强度，强度越高，助记词越长，安全性越高。
 export function createMnemonic(): string {
   return generateMnemonic(wordlist, 128);
 }
@@ -72,14 +72,22 @@ export function deriveAddress(mnemonic: string, chain: Chain, network: Network, 
     throw new Error("助记词无效");
   }
   const path = pathFor(chain, network, index);
+  // 根据助记词生成种子。mnemonicToSeedSync是同步方法，会阻塞主线程。
   const seed = mnemonicToSeedSync(phrase);
   if (chain === "solana") {
+    // 根据种子和路径派生私钥。
+    // 根据种子和路径派生私钥。slip10是SLIP-0010的实现，用于派生ed25519私钥。
     const privateKey = slip10(seed, path);
+    // 返回派生结果。
     return { chain, path, privateKey, address: base58.encode(ed25519.getPublicKey(privateKey)) };
   }
+  // 根据种子和路径派生私钥。HDKey.fromMasterSeed是BIP32的实现，用于派生私钥。
   const node = HDKey.fromMasterSeed(seed).derive(path);
   if (!node.privateKey || !node.publicKey) throw new Error("派生失败");
   const privateKey = node.privateKey;
+  // 如果私钥为空，抛出错误。
+  // 如果派生失败，抛出错误。
+  // 如果链是比特币，返回派生结果。
   if (chain === "bitcoin") {
     return {
       chain,
