@@ -2,9 +2,10 @@
 import { useEffect, useState } from "react";
 import QRCode from "qrcode";
 import { api } from "../api";
-import { CopyButton, Fault, money, shortAddress } from "../components/ui";
+import { CopyButton, Fault, formatWhen, money, shortAddress } from "../components/ui";
 import { useSession } from "../session";
-import type { Portfolio } from "../types";
+import type { Portfolio, SettlementView, Transfer } from "../types";
+import { localUsdcHistory, type UsdcMove } from "../usdcHistory";
 
 // 展示五条链的余额、估值和收款地址。
 export function Assets() {
@@ -12,12 +13,26 @@ export function Assets() {
   const [data, setData] = useState<Portfolio | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [receive, setReceive] = useState<{ address: string; title: string } | null>(null);
+  const [transfers, setTransfers] = useState<Transfer[]>([]);
+  const [usdc, setUsdc] = useState<UsdcMove[]>([]);
 
   // 向后端拉取这个账户的资产组合。
   async function load() {
     setError(null);
     try {
       setData(await api<Portfolio>(`/api/v1/accounts/${session.accountId}/assets`));
+      const history = await api<{ transfers: Transfer[] }>(`/api/v1/accounts/${session.accountId}/transfers`);
+      setTransfers(history.transfers);
+      try {
+        const view = await api<SettlementView>(`/api/v1/accounts/${session.accountId}/settlement`);
+        if (view.online && view.rpc && view.usdc && view.settlement && view.user) {
+          setUsdc(await localUsdcHistory(view.rpc, view.usdc, view.settlement, view.user));
+        } else {
+          setUsdc([]);
+        }
+      } catch {
+        setUsdc([]);
+      }
     } catch (err) {
       setError(err);
     }
@@ -67,11 +82,71 @@ export function Assets() {
                 </div>
               </div>
             ))}
+            <AddressTransfers address={chain.address} rows={transfers.filter((row) => row.chain === chain.chain && (sameAddress(row.from, chain.address) || sameAddress(row.to, chain.address)))} />
+            {chain.chain === "ethereum" && <UsdcTransfers rows={usdc} />}
           </article>
         ))}
       </div>
       {receive && <Receive title={receive.title} address={receive.address} onClose={() => setReceive(null)} />}
     </section>
+  );
+}
+
+// 展示这个地址在本钱包里记下的转账。链上完整历史不在这里。
+function AddressTransfers({ address, rows }: { address: string; rows: Transfer[] }) {
+  return (
+    <div className="stack" style={{ marginTop: 8 }}>
+      <span className="muted">转账记录</span>
+      {rows.length === 0 && <p className="muted">这个地址还没有从本钱包发出的转账。</p>}
+      {rows.map((row) => {
+        const outgoing = sameAddress(row.from, address);
+        return (
+          <div className="entry" key={row.id}>
+            <div>
+              <strong>{outgoing ? "转出" : "转入"} {row.amount} {row.asset}</strong>
+              <div className="muted">{formatWhen(row.createdAt)}</div>
+              <div className="muted">{shortAddress(row.from)} → {shortAddress(row.to)}</div>
+              {row.txHash && <div className="addr">{shortAddress(row.txHash)} <CopyButton value={row.txHash} /></div>}
+            </div>
+            <span className="tag">{row.status === "confirmed" ? "已确认" : row.status === "failed" ? "失败" : row.status === "broadcast" ? "已广播" : "已签名"}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// 地址比较忽略大小写。EVM 地址校验和不同，仍是同一个账户。
+function sameAddress(left: string, right: string): boolean {
+  return left.trim().toLowerCase() === right.trim().toLowerCase();
+}
+
+const USDC_KIND: Record<UsdcMove["kind"], string> = {
+  mint: "领取",
+  deposit: "划入合约",
+  withdraw: "提现",
+  in: "转入",
+  out: "转出",
+};
+
+// 展示本地结算链上这个地址的测试 USDC 流水。
+function UsdcTransfers({ rows }: { rows: UsdcMove[] }) {
+  return (
+    <div className="stack" style={{ marginTop: 8 }}>
+      <span className="muted">USDC 记录</span>
+      {rows.length === 0 && <p className="muted">这个地址在本地结算链上还没有 USDC 流水。</p>}
+      {rows.map((row) => (
+        <div className="entry" key={row.hash + row.kind}>
+          <div>
+            <strong>{USDC_KIND[row.kind]} {row.amount} USDC</strong>
+            <div className="muted">{formatWhen(row.createdAt)}</div>
+            <div className="muted">{shortAddress(row.from)} → {shortAddress(row.to)}</div>
+            <div className="addr">{shortAddress(row.hash)} <CopyButton value={row.hash} /></div>
+          </div>
+          <span className="tag">已确认</span>
+        </div>
+      ))}
+    </div>
   );
 }
 

@@ -48,22 +48,16 @@ export async function watchUsdc(address: string): Promise<void> {
 }
 
 // 把服务端报价交给小狐狸签名并广播，返回交易哈希。
+// nonce 用节点上的 pending 计数。Hardhat 重启后小狐狸仍记着旧计数，会发出「Expected nonce to be 4 but got 15」。
 export async function sendWithMetamask(from: string, call: PreparedCall): Promise<string> {
   const provider = requiredProvider();
   await ensureHardhat(provider);
+  const tx: Record<string, string> = { from, to: call.to, data: call.data, nonce: quantityHex(call.nonce) };
+  if (BigInt(call.value || "0") !== 0n) tx.value = quantityHex(call.value);
   try {
     const hash = await provider.request({
       method: "eth_sendTransaction",
-      params: [{
-        from,
-        to: call.to,
-        data: call.data,
-        value: quantityHex(call.value),
-        gas: quantityHex(call.gasLimit),
-        maxFeePerGas: quantityHex(call.maxFeePerGas),
-        maxPriorityFeePerGas: quantityHex(call.maxPriorityFeePerGas),
-        nonce: quantityHex(call.nonce),
-      }],
+      params: [tx],
     });
     if (typeof hash !== "string" || !hash.startsWith("0x")) throw new Error("小狐狸没有返回交易哈希。");
     return hash;
@@ -119,7 +113,12 @@ async function ensureHardhat(provider: EthereumProvider): Promise<void> {
 // 用户在弹窗里点拒绝时，给出能看懂的下一句。
 function friendly(err: unknown): Error {
   const code = (err as { code?: number }).code;
+  const message = (err as { message?: string }).message ?? "";
   if (code === 4001) return new Error("你在小狐狸里拒绝了这笔交易。");
-  if (err instanceof Error) return err;
+  if (/nonce too high/i.test(message)) {
+    return new Error("小狐狸记的交易序号比本机链高。打开小狐狸：设置 → 高级 → 清除活动和 nonce 数据，然后重新点划入。");
+  }
+  if (err instanceof Error && err.message) return err;
+  if (message) return new Error(message);
   return new Error("小狐狸没有完成这笔交易。");
 }

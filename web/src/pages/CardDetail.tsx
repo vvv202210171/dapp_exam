@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { Link, useLocation, useParams } from "react-router-dom";
 import { api } from "../api";
-import { Fault, Field } from "../components/ui";
+import { Fault, Field, formatWhen } from "../components/ui";
 import { useSession } from "../session";
 import type { Bill, Card, LedgerEntry, SettlementQuote, SettlementView } from "../types";
 import { connectMetamask, sendWithMetamask, waitForReceipt } from "../wallet/metamask";
@@ -33,6 +33,7 @@ export function CardDetail() {
   const [merchant, setMerchant] = useState("星巴克");
   const [error, setError] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState("");
   const [key, setKey] = useState(crypto.randomUUID());
 
   // 读取卡的展示信息。
@@ -57,6 +58,7 @@ function usdcUnits(value: string): bigint {
   async function fundCard() {
     setBusy(true);
     setError(null);
+    setNotice("");
     try {
       const fox = await connectMetamask();
       const expected = session.derived.ethereum.address;
@@ -65,11 +67,52 @@ function usdcUnits(value: string): bigint {
       }
       const view = await api<SettlementView>(`/api/v1/accounts/${session.accountId}/settlement`);
       if (!view.online) throw new Error(view.hint || "结算链没有连上。");
-      if (usdcUnits(view.allowance ?? "0") < usdcUnits(amount)) {
-        await sendAction(fox, "approve", amount);
+      const needed = usdcUnits(amount);
+      if (usdcUnits(view.walletUsdc ?? "0") < needed) {
+        throw new Error(`钱包里只有 ${view.walletUsdc ?? "0"} USDC，不够划入 ${amount}。先到结算页领取测试 USDC。`);
+      }
+      if (usdcUnits(view.allowance ?? "0") < needed) {
+        await sendAction(fox, "approve", "1000000000000");
       }
       const hash = await sendAction(fox, "deposit", amount);
       await api(`/api/v1/cards/${id}/topup`, { method: "POST", body: JSON.stringify({ amount, txHash: hash }) });
+      await loadCard();
+      await loadBill();
+    } catch (err) {
+      setError(err);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // 小狐狸先从结算合约提回 USDC，链上确认后才扣卡余额和 1% 手续费。
+  async function withdrawCard() {
+    setBusy(true);
+    setError(null);
+    setNotice("");
+    try {
+      const fox = await connectMetamask();
+      const expected = session.derived.ethereum.address;
+      if (fox.toLowerCase() !== expected.toLowerCase()) {
+        throw new Error(`小狐狸当前是 ${fox}。请换成 ${expected}。`);
+      }
+      const principal = centsOf(amount);
+      const fee = principal / 100n > 0n ? principal / 100n : 1n;
+      if (centsOf(card?.available ?? "0") < principal + fee) {
+        throw new Error("卡余额不够这笔提现和 1% 手续费。");
+      }
+      const view = await api<SettlementView>(`/api/v1/accounts/${session.accountId}/settlement`);
+      if (!view.online) throw new Error(view.hint || "结算链没有连上。");
+      if (usdcUnits(view.available ?? "0") < usdcUnits(amount)) {
+        throw new Error(`合约里只有 ${view.available ?? "0"} USDC，不够提现 ${amount}。`);
+      }
+      const hash = await sendAction(fox, "withdraw", amount);
+      const ref = hash.replace(/^0x/i, "").toLowerCase();
+      await api(`/api/v1/cards/${id}/withdraw`, {
+        method: "POST",
+        body: JSON.stringify({ amount, idempotencyKey: ref, note: `链上提现 ${hash}` }),
+      });
+      setNotice(`已提现 ${amount} USDC 到钱包，卡另扣 1% 手续费。`);
       await loadCard();
       await loadBill();
     } catch (err) {
@@ -143,9 +186,12 @@ function usdcUnits(value: string): bigint {
         <form className="sheet stack" onSubmit={(event) => { event.preventDefault(); void fundCard(); }}>
           <h2>充值</h2>
           <Field label="金额 USD"><input value={amount} onChange={(event) => setAmount(event.target.value)} /></Field>
-          <p className="muted">小狐狸先把同样金额的 USDC 划进结算合约。链上确认后，卡余额才加上这笔钱。授权不够或拒绝签名，卡余额不变。</p>
+          <p className="muted">授权不够时，小狐狸会先弹出一笔授权，确认后再弹出划入。两笔都确认后，卡余额才加上这笔钱。拒绝签名则卡余额不变。</p>
           <button className="primary" type="submit" disabled={busy}>{busy ? "等待小狐狸确认…" : "划入 USDC 并入账"}</button>
-          <button className="ghost" type="button" onClick={() => void run(`/api/v1/cards/${id}/withdraw`, { amount })}>提现（另收 1%）</button>
+          <button className="ghost" type="button" disabled={busy} onClick={() => void withdrawCard()}>{busy ? "等待小狐狸确认…" : "提现（另收 1%）"}</button>
+          <p className="muted">提现会弹出小狐狸，把同样金额的 USDC 从结算合约退回钱包，卡余额再扣这笔钱和 1% 手续费。</p>
+          {notice && <p className="ok">{notice}</p>}
+          <Fault error={error} />
         </form>
         <form className="sheet stack" onSubmit={(event) => { event.preventDefault(); void run(`/api/v1/cards/${id}/spend`, { amount, merchant, mcc: "5814" }); }}>
           <h2>消费</h2>
@@ -169,7 +215,7 @@ function usdcUnits(value: string): bigint {
           </div>
           <div className="sheet">
             {bill.entries.length === 0 && <p className="muted">这个月没有账。</p>}
-            {bill.entries.map((entry) => <Entry key={entry.id} entry={entry} />)}
+            {[...bill.entries].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)).map((entry) => <Entry key={entry.id} entry={entry} />)}
           </div>
         </>
       )}
@@ -184,11 +230,13 @@ function Stat({ label, value }: { label: string; value: string }) {
 
 // 展示一条流水。
 function Entry({ entry }: { entry: LedgerEntry }) {
+  const detail = entry.merchant || entry.note;
   return (
     <div className="entry">
       <div>
         <strong>{KIND[entry.kind] ?? entry.kind}</strong>
-        <div className="muted">{entry.merchant || entry.note}</div>
+        <div className="muted">{formatWhen(entry.createdAt)}</div>
+        {detail && <div className="muted">{detail}</div>}
       </div>
       <div className="right">
         <div className="mono">{entry.kind === "topup" ? "+" : "-"}${entry.amount}</div>
@@ -196,6 +244,12 @@ function Entry({ entry }: { entry: LedgerEntry }) {
       </div>
     </div>
   );
+}
+
+// 美元字符串按分比较，用来判断卡余额够不够提现和手续费。
+function centsOf(value: string): bigint {
+  const [whole, frac = ""] = (value.trim() || "0").split(".");
+  return BigInt(`${whole || "0"}${(frac + "00").slice(0, 2)}`);
 }
 
 // 返回当月，格式 YYYY-MM。

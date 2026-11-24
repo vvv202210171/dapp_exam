@@ -1,7 +1,7 @@
 // 只记录这只钱包发出的交易。链上全量历史需要索引器，这里是本地发起记录再向节点核对状态。
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import { CopyButton, Fault, shortAddress } from "../components/ui";
+import { CopyButton, Fault, formatWhen, shortAddress } from "../components/ui";
 import { useSession } from "../session";
 import { CHAIN_LABEL, type Transfer } from "../types";
 
@@ -60,6 +60,7 @@ export function Activity() {
           <article className="transfer" key={row.id}>
             <div>
               <strong>{CHAIN_LABEL[row.chain]} · {row.amount} {row.asset}</strong>
+              <div className="muted">{formatWhen(row.createdAt)}</div>
               <div className="muted">{shortAddress(row.from)} → {shortAddress(row.to)}</div>
               <div className="tag">{STATUS[row.status]}{row.fee ? ` · 费 ${row.fee}` : ""}</div>
               {row.detail && <div className="muted">{row.detail}</div>}

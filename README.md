@@ -35,6 +35,7 @@ Solidity CardSettlement
 | 目录 | 作用 |
 | --- | --- |
 | `web/` | React 钱包。保险库、派生、签名、页面 |
+| `web-vue/` | 同一套钱包的 Vue 版，端口 5174。助记词和 React 版存在同一个 localStorage 键 |
 | `server/` | Go API。适配器、SQLite、卡账本 |
 | `server-java/` | 同一套 `/api/v1` 的 Spring Boot 版，按 Controller、Service、DAO 分层。和 Go 共用 `server/data` 里的库，不要同时监听 8080 |
 | `contracts/` | Hardhat 合约和测试 |
@@ -59,6 +60,17 @@ npm run dev
 ```
 
 打开 http://localhost:5173 。
+
+Vue 版接口相同，页面用 Vue 3 重写。助记词保险库和 React 版共用 `aegis.vault.v1`，不要两个页面同时开着同一套钱包：
+
+```powershell
+cd web-vue
+npm install
+npm test
+npm run dev
+```
+
+打开 http://localhost:5174 。
 
 Java 版是 Spring Boot，接口和 Go 版相同。两边默认都读写 `server/data/aegis.db`，卡号密钥也是同一份 `server/data/card.key`。不要同时启动：端口都是 8080，SQLite 也不能两个进程一起写。本机没有 Maven 时 `build.ps1` 会自己下载：
 

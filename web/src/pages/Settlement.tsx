@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
-import { Fault } from "../components/ui";
+import { Fault, formatWhen } from "../components/ui";
 import { useSession } from "../session";
 import type { SettlementQuote, SettlementReceipt, SettlementView } from "../types";
 import { connectMetamask, sendWithMetamask, waitForReceipt, watchUsdc } from "../wallet/metamask";
@@ -118,7 +118,10 @@ export function Settlement() {
               await signAndSend("approve", amount);
               await signAndSend("deposit", amount);
             })}>授权并存入</button>
-            <button className="ghost" type="button" disabled={busy || !view?.online || !foxReady} onClick={() => void run(() => signAndSend("withdraw", amount))}>提现</button>
+            <button className="ghost" type="button" disabled={busy || !view?.online} onClick={() => void run(async () => {
+              if (!foxReady) throw new Error("先连接小狐狸，并选中这个钱包的以太坊地址。");
+              await signAndSend("withdraw", amount);
+            })}>提现</button>
           </div>
           {log.length > 0 && <pre className="payload">{log.join("\n")}</pre>}
         </div>
@@ -136,6 +139,7 @@ export function Settlement() {
             <div className="entry" key={spend.entryId}>
               <div>
                 <strong>{spend.merchant || "消费"}</strong>
+                <div className="muted">{formatWhen(spend.createdAt)}</div>
                 <div className="muted">尾号 {spend.last4} · ${spend.amount} · {spend.units} USDC</div>
                 {spend.txHash && <div className="mono">{spend.txHash}</div>}
               </div>

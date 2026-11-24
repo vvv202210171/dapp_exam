@@ -55,3 +55,11 @@ export function shortAddress(value: string): string {
 export function money(value: string | undefined): string {
   return value && value !== "" ? value : "0";
 }
+
+// 把流水时间显示成本地的日期和时间。
+export function formatWhen(value: string): string {
+  const time = new Date(/^\d+$/.test(value) ? Number(value) : value);
+  if (Number.isNaN(time.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${time.getFullYear()}-${pad(time.getMonth() + 1)}-${pad(time.getDate())} ${pad(time.getHours())}:${pad(time.getMinutes())}:${pad(time.getSeconds())}`;
+}
