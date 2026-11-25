@@ -3,8 +3,9 @@ import { useEffect, useState } from "react";
 import QRCode from "qrcode";
 import { api } from "../api";
 import { CopyButton, Fault, formatWhen, money, shortAddress } from "../components/ui";
+import { addressExplorer } from "../explorer";
 import { useSession } from "../session";
-import type { Portfolio, SettlementView, Transfer } from "../types";
+import type { Chain, Portfolio, SettlementView, Transfer } from "../types";
 import { localUsdcHistory, type UsdcMove } from "../usdcHistory";
 
 // 展示五条链的余额、估值和收款地址。
@@ -12,7 +13,7 @@ export function Assets() {
   const session = useSession();
   const [data, setData] = useState<Portfolio | null>(null);
   const [error, setError] = useState<unknown>(null);
-  const [receive, setReceive] = useState<{ address: string; title: string } | null>(null);
+  const [receive, setReceive] = useState<{ address: string; title: string; chain: Chain } | null>(null);
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [usdc, setUsdc] = useState<UsdcMove[]>([]);
 
@@ -63,10 +64,13 @@ export function Assets() {
             <header>
               <div>
                 <strong>{chain.name}</strong>
-                <div className="addr">{shortAddress(chain.address)} <CopyButton value={chain.address} /></div>
+                <div className="addr">
+                  {shortAddress(chain.address)} <CopyButton value={chain.address} />{" "}
+                  <a className="text-btn" href={addressExplorer(chain.chain, session.meta.network, chain.address)} target="_blank" rel="noopener noreferrer">链上记录</a>
+                </div>
                 <div className="tag">{chain.path}</div>
               </div>
-              <button className="ghost" type="button" onClick={() => setReceive({ address: chain.address, title: chain.name })}>收款</button>
+              <button className="ghost" type="button" onClick={() => setReceive({ address: chain.address, title: chain.name, chain: chain.chain })}>收款</button>
             </header>
             {!chain.ok && <Fault error={chain.error} />}
             {chain.assets.map((asset) => (
@@ -87,7 +91,7 @@ export function Assets() {
           </article>
         ))}
       </div>
-      {receive && <Receive title={receive.title} address={receive.address} onClose={() => setReceive(null)} />}
+      {receive && <Receive title={receive.title} address={receive.address} chain={receive.chain} network={session.meta.network} onClose={() => setReceive(null)} />}
     </section>
   );
 }
@@ -151,7 +155,7 @@ function UsdcTransfers({ rows }: { rows: UsdcMove[] }) {
 }
 
 // 弹出收款地址和二维码。
-function Receive({ title, address, onClose }: { title: string; address: string; onClose: () => void }) {
+function Receive({ title, address, chain, network, onClose }: { title: string; address: string; chain: Chain; network: "mainnet" | "testnet"; onClose: () => void }) {
   const [src, setSrc] = useState("");
   useEffect(() => {
     void QRCode.toDataURL(address, { margin: 1, width: 220, color: { dark: "#172000", light: "#f6f3e8" } }).then(setSrc);
@@ -164,6 +168,7 @@ function Receive({ title, address, onClose }: { title: string; address: string; 
         <div className="addr">{address}</div>
         <div className="row">
           <CopyButton value={address} />
+          <a className="text-btn" href={addressExplorer(chain, network, address)} target="_blank" rel="noopener noreferrer">链上记录</a>
           <button className="ghost" type="button" onClick={onClose}>关闭</button>
         </div>
       </div>

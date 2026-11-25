@@ -91,13 +91,16 @@ public final class BtcClient implements Chains.Adapter {
      */
     public PrepareResult prepare(String from, String to, String amount, BigInteger units, Asset asset) {
         if (!"native".equals(asset.kind)) throw AppError.of("INVALID_ARGUMENT", "不能在比特币主链上直接转 USDT", "稳定币请换 Ethereum、BNB、TRON 或 Solana。");
+        // 2024-06-10: 这里不再用 BigInteger，直接用 long，避免精度问题。
         long sats = TxBuild.mustLong(units);
         if (sats <= 0) throw AppError.of("INVALID_ARGUMENT", "金额超出范围", "");
+        // 2024-06-10: 这里只花费已确认的 UTXO，避免刚收到的币被花掉。
         List<BtcInput> confirmed = utxos(from, true);
         if (confirmed.isEmpty()) throw AppError.of("INSUFFICIENT_FUNDS", "没有已确认的 UTXO", "刚收到的比特币要等确认后才能转出。未确认的找零也不能花。");
         long feeRate = 8;
         JsonNode fees = http.getJson(base + "/v1/fees/recommended");
         if (fees.path("halfHourFee").asLong(0) > 0) feeRate = fees.path("halfHourFee").asLong();
+
         TxBuild.Coins coins = TxBuild.selectCoins(confirmed, sats, feeRate);
         List<BtcOutput> outputs = new ArrayList<>();
         BtcOutput pay = new BtcOutput();

@@ -4,15 +4,16 @@ import QRCode from "qrcode";
 import { api } from "../api";
 import CopyButton from "../components/CopyButton.vue";
 import Fault from "../components/Fault.vue";
+import { addressExplorer } from "../explorer";
 import { formatWhen, money, shortAddress } from "../format";
 import { wallet } from "../session";
-import type { Portfolio, SettlementView, Transfer } from "../types";
+import type { Chain, Portfolio, SettlementView, Transfer } from "../types";
 import { localUsdcHistory, type UsdcMove } from "../usdcHistory";
 
 const session = computed(() => wallet.session);
 const data = ref<Portfolio | null>(null);
 const error = ref<unknown>(null);
-const receive = ref<{ address: string; title: string } | null>(null);
+const receive = ref<{ address: string; title: string; chain: Chain } | null>(null);
 const transfers = ref<Transfer[]>([]);
 const usdc = ref<UsdcMove[]>([]);
 const qr = ref("");
@@ -98,10 +99,14 @@ onMounted(() => {
         <header>
           <div>
             <strong>{{ chain.name }}</strong>
-            <div class="addr">{{ shortAddress(chain.address) }} <CopyButton :value="chain.address" /></div>
+            <div class="addr">
+              {{ shortAddress(chain.address) }}
+              <CopyButton :value="chain.address" />
+              <a class="text-btn" :href="addressExplorer(chain.chain, session.meta.network, chain.address)" target="_blank" rel="noopener noreferrer">链上记录</a>
+            </div>
             <div class="tag">{{ chain.path }}</div>
           </div>
-          <button class="ghost" type="button" @click="receive = { address: chain.address, title: chain.name }">收款</button>
+          <button class="ghost" type="button" @click="receive = { address: chain.address, title: chain.name, chain: chain.chain }">收款</button>
         </header>
         <Fault v-if="!chain.ok" :error="chain.error" />
         <div v-for="asset in chain.assets" :key="asset.symbol" class="asset">
@@ -150,6 +155,7 @@ onMounted(() => {
         <div class="addr">{{ receive.address }}</div>
         <div class="row">
           <CopyButton :value="receive.address" />
+          <a class="text-btn" :href="addressExplorer(receive.chain, session.meta.network, receive.address)" target="_blank" rel="noopener noreferrer">链上记录</a>
           <button class="ghost" type="button" @click="receive = null">关闭</button>
         </div>
       </div>

@@ -13,7 +13,7 @@ public final class Money {
 
     /**
      * 把人类可读金额换成最小单位。
-     *
+     * 例如btc 0.1 会被换成 10000000 satoshi，eth 0.1 会被换成 100000000000000000 wei。
      * @param amount 例如 25.50
      * @param decimals 小数位数，ETH 是 18，USDC 是 6
      * @return 最小单位
