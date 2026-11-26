@@ -8,6 +8,7 @@ import aegis.domain.Money;
 import aegis.platform.Support;
 import aegis.service.CardService;
 import aegis.service.SettlementService;
+import aegis.txbuild.Spl;
 import aegis.txbuild.TxBuild;
 import java.math.BigInteger;
 import java.nio.file.Files;
@@ -68,6 +69,12 @@ public final class SelfTest {
         catch (aegis.domain.Models.AppError expected) {}
         String solMsg = Support.base58Encode(TxBuild.buildSolTransfer(sol.address, "4fYNw3dojWmQ4dXtSGE9epjRGy9pFSx62YypT7avPYvA", 1, Support.base58Encode(new byte[32])));
         if (solMsg.isEmpty()) throw new AssertionError("sol");
+        try { aegis.chain.Chains.rejectZero("tron", "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb"); throw new AssertionError("zero"); }
+        catch (aegis.domain.Models.AppError expected) {}
+        eq(Spl.associatedTokenAddress(sol.address, "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"), "5N3f1tj9v1vc5TUZ8S7mCAnVmjVKrfnzXWhxLaxyZAgt");
+        eq(Spl.associatedTokenAddress(sol.address, "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"), "Bjr2Shw9sy31UNdm8kYs5y72iTbnxB4JemK98vJqyQWm");
+        byte[] tokenMsg = Spl.buildTokenTransfer(sol.address, "5N3f1tj9v1vc5TUZ8S7mCAnVmjVKrfnzXWhxLaxyZAgt", "Bjr2Shw9sy31UNdm8kYs5y72iTbnxB4JemK98vJqyQWm", "4fYNw3dojWmQ4dXtSGE9epjRGy9pFSx62YypT7avPYvA", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", 1_000_000, 6, false, Support.base58Encode(new byte[32]));
+        if (tokenMsg[0] != 1 || tokenMsg[1] != 0 || tokenMsg[2] != 2 || tokenMsg[3] != 5 || tokenMsg[tokenMsg.length - 1] != 6) throw new AssertionError("spl");
         System.out.println("self-test ok");
     }
 

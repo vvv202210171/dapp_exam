@@ -168,6 +168,39 @@ public final class Chains {
     }
 
     /**
+     * 拒绝代币合约不接受的零地址。格式校验通过后调用。
+     *
+     * @param id 链编号
+     * @param address 收款地址
+     */
+    public static void rejectZero(String id, String address) {
+        address = address == null ? "" : address.trim();
+        boolean zero = switch (id) {
+            case "ethereum", "bnb" -> "0x0000000000000000000000000000000000000000".equalsIgnoreCase(address);
+            case "tron" -> tronZero(address);
+            default -> false;
+        };
+        if (zero) throw AppError.of("INVALID_ARGUMENT", "不能转到零地址", "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb 是 20 个 0 的波场写法。0x 后面 40 个 0 是 EVM 的零地址。代币合约会直接拒绝。");
+    }
+
+    /**
+     * 波场零地址是 0x41 后面 20 个 0，Base58 看起来仍像普通 T 地址。
+     *
+     * @param address T 开头的地址
+     * @return 是零地址时为 true
+     */
+    private static boolean tronZero(String address) {
+        try {
+            byte[] raw = Support.base58CheckDecode(address);
+            if (raw.length != 21 || raw[0] != 0x41) return false;
+            for (int i = 1; i < raw.length; i++) if (raw[i] != 0) return false;
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
      * 按链和网络检查地址格式。
      *
      * @param id 链编号
@@ -234,6 +267,8 @@ public final class Chains {
                 } else {
                     note = "当前网络没有配置该代币的官方合约，余额按 0 处理。";
                 }
+            } else if (spec.notes.get(network) != null) {
+                note = spec.notes.get(network);
             }
             Asset a = new Asset();
             a.symbol = spec.symbol;
@@ -531,12 +566,28 @@ public final class Chains {
          * @return 报价
          */
         private PrepareResult sol(String from, String to, String amount, BigInteger units, Asset asset) {
-            if (!"native".equals(asset.kind)) throw AppError.of("INVALID_ARGUMENT", "沙箱里的 Solana 转账只覆盖原生 SOL", "USDT/USDC 可以在资产页看到模拟余额。SPL 转账需要关联代币账户。");
-            long lamports = TxBuild.mustLong(units);
-            if (lamports == 0) throw AppError.of("INVALID_ARGUMENT", "金额超出范围", "");
             byte[] block = new byte[32];
             java.util.Arrays.fill(block, (byte) 7);
             String blockhash = Support.base58Encode(block);
+            if (!"native".equals(asset.kind)) {
+                if (asset.contract == null || asset.contract.isEmpty()) throw AppError.of("INVALID_ARGUMENT", "当前网络不能转这个代币", asset.note);
+                long value = TxBuild.mustLong(units);
+                if (value <= 0) throw AppError.of("INVALID_ARGUMENT", "金额超出范围", "");
+                String source = aegis.txbuild.Spl.associatedTokenAddress(from, asset.contract);
+                String dest = aegis.txbuild.Spl.associatedTokenAddress(to, asset.contract);
+                byte[] msg = aegis.txbuild.Spl.buildTokenTransfer(from, source, dest, to, asset.contract, value, asset.decimals, true, blockhash);
+                SolPayload payload = new SolPayload();
+                payload.message = Base64.getEncoder().encodeToString(msg);
+                payload.blockhash = blockhash;
+                payload.lamports = "0";
+                payload.from = from;
+                payload.to = to;
+                return result("solana", network, "sandbox", asset.symbol, from, to, amount,
+                        fee("SOL", "0.000005", Map.of("lamports", "5000")), payload,
+                        List.of("沙箱 blockhash 是固定值，签出来的交易不会被 Solana 接受。", "教学消息会带上创建关联账户的指令。真实网络上这一步大约再花 0.00204 SOL。"));
+            }
+            long lamports = TxBuild.mustLong(units);
+            if (lamports == 0) throw AppError.of("INVALID_ARGUMENT", "金额超出范围", "");
             byte[] msg = TxBuild.buildSolTransfer(from, to, lamports, blockhash);
             SolPayload payload = new SolPayload();
             payload.message = Base64.getEncoder().encodeToString(msg);
@@ -702,7 +753,7 @@ public final class Chains {
      * @param decimals 小数位
      * @param contracts 网络到合约地址
      */
-    private record TokenSpec(String symbol, String name, int decimals, Map<String, String> contracts) {}
+    private record TokenSpec(String symbol, String name, int decimals, Map<String, String> contracts, Map<String, String> notes) {}
 
     /**
      * 这条链配置了哪些稳定币。
@@ -713,17 +764,17 @@ public final class Chains {
     private static List<TokenSpec> catalog(String id) {
         return switch (id) {
             case "ethereum" -> List.of(
-                    new TokenSpec("USDT", "Tether USD", 6, Map.of("mainnet", "0xdAC17F958D2ee523a2206206994597C13D831ec7")),
-                    new TokenSpec("USDC", "USD Coin", 6, Map.of("mainnet", "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48")));
+                    new TokenSpec("USDT", "Tether USD", 6, Map.of("mainnet", "0xdAC17F958D2ee523a2206206994597C13D831ec7", "testnet", "0xaA8E23Fb1079EA71e0a56F48a2aA51851D8433D0"), Map.of("testnet", "Sepolia 上名为 USDT 的测试币，6 位小数。")),
+                    new TokenSpec("USDC", "USD Coin", 6, Map.of("mainnet", "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", "testnet", "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238"), Map.of("testnet", "Circle 在 Sepolia 上的 USDC，6 位小数。")));
             case "bnb" -> List.of(
-                    new TokenSpec("USDT", "Tether USD", 18, Map.of("mainnet", "0x55d398326f99059fF775485246999027B3197955")),
-                    new TokenSpec("USDC", "USD Coin", 18, Map.of("mainnet", "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d")));
+                    new TokenSpec("USDT", "Tether USD", 18, Map.of("mainnet", "0x55d398326f99059fF775485246999027B3197955", "testnet", "0x337610d27c682E347C9cD60BD4b3b107C9d34dDd"), Map.of("testnet", "BSC 测试网 USDT，18 位小数。")),
+                    new TokenSpec("USDC", "USD Coin", 18, Map.of("mainnet", "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d"), Map.of()));
             case "tron" -> List.of(
-                    new TokenSpec("USDT", "Tether USD", 6, Map.of("mainnet", "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t")),
-                    new TokenSpec("USDC", "USD Coin", 6, Map.of("mainnet", "TEkxiTehnzSmSe2XqrBj4w32RUN966rdz8")));
+                    new TokenSpec("USDT", "Tether USD", 6, Map.of("mainnet", "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", "testnet", "TG3XXyExBkPp9nzdajDZsozEu4BkaSJozs"), Map.of("testnet", "Shasta 水龙头发放的测试 USDT，6 位小数。")),
+                    new TokenSpec("USDC", "USD Coin", 6, Map.of("mainnet", "TEkxiTehnzSmSe2XqrBj4w32RUN966rdz8"), Map.of()));
             case "solana" -> List.of(
-                    new TokenSpec("USDT", "Tether USD", 6, Map.of("mainnet", "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB")),
-                    new TokenSpec("USDC", "USD Coin", 6, Map.of("mainnet", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")));
+                    new TokenSpec("USDT", "Tether USD", 6, Map.of("mainnet", "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"), Map.of()),
+                    new TokenSpec("USDC", "USD Coin", 6, Map.of("mainnet", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "testnet", "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"), Map.of("testnet", "Circle 在 devnet 上的 USDC，6 位小数。")));
             default -> List.of();
         };
     }

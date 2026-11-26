@@ -233,6 +233,9 @@ func (s *TransferService) ready(ctx context.Context, accountID string, id domain
 	if err := chain.ValidateAddress(id, s.network, to); err != nil {
 		return domain.Account{}, nil, domain.Asset{}, nil, err
 	}
+	if err := chain.RejectZero(id, to); err != nil {
+		return domain.Account{}, nil, domain.Asset{}, nil, err
+	}
 	asset, err := chain.FindAsset(id, s.network, s.mode, assetSymbol)
 	if err != nil {
 		return domain.Account{}, nil, domain.Asset{}, nil, err

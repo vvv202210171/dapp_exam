@@ -10,15 +10,17 @@ import aegis.domain.Models.SolPayload;
 import aegis.domain.Models.TxState;
 import aegis.domain.Money;
 import aegis.platform.Support;
+import aegis.txbuild.Spl;
 import aegis.txbuild.TxBuild;
 import com.fasterxml.jackson.databind.JsonNode;
 import java.math.BigInteger;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 
 /**
- * Solana 真实节点适配器。转账路径目前只覆盖原生 SOL。
+ * Solana 真实节点适配器。原生 SOL 走系统程序，USDT 和 USDC 走 SPL 关联账户。
  */
 public final class SolClient implements Chains.Adapter {
     private final String network;
@@ -96,7 +98,7 @@ public final class SolClient implements Chains.Adapter {
      * @return 报价
      */
     public PrepareResult prepare(String from, String to, String amount, BigInteger units, Asset asset) {
-        if (!"native".equals(asset.kind)) throw AppError.of("INVALID_ARGUMENT", "Solana 代币转账还没接到签名器", "USDT/USDC 可以查余额。转账教学路径先覆盖 SOL 原生转账，SPL Token 需要关联账户。");
+        if (!"native".equals(asset.kind)) return prepareToken(from, to, amount, units, asset);
         long lamports = TxBuild.mustLong(units);
         if (lamports == 0) throw AppError.of("INVALID_ARGUMENT", "金额超出范围", "");
         JsonNode raw = call("getLatestBlockhash", List.of(Map.of("commitment", "confirmed")));
@@ -112,6 +114,63 @@ public final class SolClient implements Chains.Adapter {
         return Chains.result("solana", network, "live", "SOL", from, to, amount,
                 Chains.fee("SOL", "0.000005", Map.of("lamports", "5000")), payload,
                 List.of("blockhash 大约一分钟失效，签完尽快广播。", "向新地址转账时，金额通常还要覆盖租金豁免（约 0.00089 SOL），否则节点会拒绝。"));
+    }
+
+    /**
+     * 报价一笔 SPL 转账。收款人没有关联账户时，消息里会先创建它。
+     *
+     * @param from 付款地址
+     * @param to 收款地址
+     * @param amount 人类可读金额
+     * @param units 最小单位
+     * @param asset 代币
+     * @return 报价
+     */
+    private PrepareResult prepareToken(String from, String to, String amount, BigInteger units, Asset asset) {
+        if (asset.contract == null || asset.contract.isEmpty()) throw AppError.of("INVALID_ARGUMENT", "当前网络不能转这个代币", asset.note);
+        long value = TxBuild.mustLong(units);
+        if (value <= 0) throw AppError.of("INVALID_ARGUMENT", "金额超出范围", "");
+        if (from.equals(to)) throw AppError.of("INVALID_ARGUMENT", "不能把代币转给自己", "付款钱包和收款钱包要是两个地址。");
+        String mint = asset.contract;
+        String sourceAta = Spl.associatedTokenAddress(from, mint);
+        String destAta = Spl.associatedTokenAddress(to, mint);
+        JsonNode rows = call("getTokenAccountsByOwner", List.of(from, Map.of("mint", mint), Map.of("encoding", "jsonParsed")));
+        String source = null;
+        int decimals = asset.decimals;
+        String fallback = null;
+        int fallbackDecimals = decimals;
+        for (JsonNode row : rows.path("value")) {
+            String program = row.path("account").path("owner").asText("");
+            if (!Spl.TOKEN_PROGRAM.equals(program)) continue;
+            JsonNode info = row.path("account").path("data").path("parsed").path("info");
+            BigInteger balance;
+            try { balance = new BigInteger(info.path("tokenAmount").path("amount").asText("0")); }
+            catch (Exception e) { continue; }
+            if (balance.compareTo(units) < 0) continue;
+            int rowDecimals = info.path("tokenAmount").path("decimals").asInt(asset.decimals);
+            String pubkey = row.path("pubkey").asText("");
+            if (pubkey.equals(sourceAta)) { source = pubkey; decimals = rowDecimals; break; }
+            if (fallback == null) { fallback = pubkey; fallbackDecimals = rowDecimals; }
+        }
+        if (source == null) { source = fallback; decimals = fallbackDecimals; }
+        if (source == null) throw AppError.of("INSUFFICIENT_FUNDS", "代币余额不够", "先确认这个地址的 " + asset.symbol + " 余额。手续费另用 SOL 支付。");
+        if (decimals != asset.decimals) throw AppError.of("INVALID_ARGUMENT", "链上小数位和配置不一致", "这条代币在链上是 " + decimals + " 位小数。");
+        JsonNode info = call("getAccountInfo", List.of(destAta, Map.of("encoding", "base64")));
+        boolean create = info == null || info.isNull() || info.path("value").isNull() || info.path("value").isMissingNode();
+        JsonNode raw = call("getLatestBlockhash", List.of(Map.of("commitment", "confirmed")));
+        String blockhash = raw.path("value").path("blockhash").asText("");
+        if (blockhash.isEmpty()) throw new RuntimeException("节点没有返回 blockhash");
+        byte[] msg = Spl.buildTokenTransfer(from, source, destAta, to, mint, value, decimals, create, blockhash);
+        SolPayload payload = new SolPayload();
+        payload.message = Base64.getEncoder().encodeToString(msg);
+        payload.blockhash = blockhash;
+        payload.lamports = "0";
+        payload.from = from;
+        payload.to = to;
+        List<String> warnings = new ArrayList<>(List.of("blockhash 大约一分钟失效，签完尽快广播。", "代币转账的手续费用 SOL 支付。"));
+        if (create) warnings.add("对方还没有这个币的关联账户，这笔交易会创建它，大约再花 0.00204 SOL。");
+        return Chains.result("solana", network, "live", asset.symbol, from, to, amount,
+                Chains.fee("SOL", "0.000005", Map.of("lamports", "5000")), payload, warnings);
     }
 
     /**

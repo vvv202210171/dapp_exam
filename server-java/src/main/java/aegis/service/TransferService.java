@@ -205,6 +205,7 @@ public class TransferService {
         Account acc = accounts.get(accountId);
         if (!AccountService.owns(acc, chain, from)) throw AppError.of("INVALID_ARGUMENT", "付款地址不属于这个账户", "只能从当前助记词派生出的地址转出。");
         Chains.validate(chain, network, to);
+        Chains.rejectZero(chain, to);
         Asset asset = Chains.findAsset(chain, network, mode, assetSymbol);
         BigInteger units;
         try { units = Money.parseUnits(amount, asset.decimals); }

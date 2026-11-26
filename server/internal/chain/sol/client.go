@@ -1,4 +1,4 @@
-// Solana JSON-RPC。报价只构造原生 SOL 转账；SPL 代币要先有关联账户，这里只查余额。
+// Solana JSON-RPC。原生 SOL 走系统程序，USDT 和 USDC 走 SPL 关联账户。
 package sol
 
 import (
@@ -102,7 +102,7 @@ func (c *Client) Balance(ctx context.Context, address string, asset domain.Asset
 // 取最新 blockhash，组装一笔原生 SOL 转账消息。
 func (c *Client) Prepare(ctx context.Context, from, to, amount string, units *big.Int, asset domain.Asset) (domain.PrepareResult, error) {
 	if asset.Kind != "native" {
-		return domain.PrepareResult{}, domain.E("INVALID_ARGUMENT", "Solana 代币转账还没接到签名器", "USDT/USDC 可以查余额。转账教学路径先覆盖 SOL 原生转账，SPL Token 需要关联账户。")
+		return c.prepareToken(ctx, from, to, amount, units, asset)
 	}
 	lamports, err := txbuild.MustUint64(units)
 	if err != nil || lamports == 0 {
@@ -149,6 +149,134 @@ func (c *Client) Prepare(ctx context.Context, from, to, amount string, units *bi
 			"blockhash 大约一分钟失效，签完尽快广播。",
 			"向新地址转账时，金额通常还要覆盖租金豁免（约 0.00089 SOL），否则节点会拒绝。",
 		},
+	}, nil
+}
+
+// 报价一笔 SPL 转账。收款人没有关联账户时，消息里会先创建它。
+func (c *Client) prepareToken(ctx context.Context, from, to, amount string, units *big.Int, asset domain.Asset) (domain.PrepareResult, error) {
+	if asset.Contract == "" {
+		return domain.PrepareResult{}, domain.E("INVALID_ARGUMENT", "当前网络不能转这个代币", asset.Note)
+	}
+	value, err := txbuild.MustUint64(units)
+	if err != nil || value == 0 {
+		return domain.PrepareResult{}, domain.E("INVALID_ARGUMENT", "金额超出范围", "")
+	}
+	if from == to {
+		return domain.PrepareResult{}, domain.E("INVALID_ARGUMENT", "不能把代币转给自己", "付款钱包和收款钱包要是两个地址。")
+	}
+	sourceAta, err := txbuild.AssociatedTokenAddress(from, asset.Contract)
+	if err != nil {
+		return domain.PrepareResult{}, err
+	}
+	destAta, err := txbuild.AssociatedTokenAddress(to, asset.Contract)
+	if err != nil {
+		return domain.PrepareResult{}, err
+	}
+	raw, err := c.call(ctx, "getTokenAccountsByOwner", []any{from, map[string]string{"mint": asset.Contract}, map[string]string{"encoding": "jsonParsed"}})
+	if err != nil {
+		return domain.PrepareResult{}, err
+	}
+	var rows struct {
+		Value []struct {
+			Pubkey  string `json:"pubkey"`
+			Account struct {
+				Owner string `json:"owner"`
+				Data  struct {
+					Parsed struct {
+						Info struct {
+							TokenAmount struct {
+								Amount   string `json:"amount"`
+								Decimals int    `json:"decimals"`
+							} `json:"tokenAmount"`
+						} `json:"info"`
+					} `json:"parsed"`
+				} `json:"data"`
+			} `json:"account"`
+		} `json:"value"`
+	}
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		return domain.PrepareResult{}, err
+	}
+	source := ""
+	decimals := asset.Decimals
+	fallback := ""
+	fallbackDecimals := decimals
+	for _, row := range rows.Value {
+		if row.Account.Owner != txbuild.TokenProgram {
+			continue
+		}
+		balance, ok := new(big.Int).SetString(row.Account.Data.Parsed.Info.TokenAmount.Amount, 10)
+		if !ok || balance.Cmp(units) < 0 {
+			continue
+		}
+		if row.Pubkey == sourceAta {
+			source = row.Pubkey
+			decimals = row.Account.Data.Parsed.Info.TokenAmount.Decimals
+			break
+		}
+		if fallback == "" {
+			fallback = row.Pubkey
+			fallbackDecimals = row.Account.Data.Parsed.Info.TokenAmount.Decimals
+		}
+	}
+	if source == "" {
+		source = fallback
+		decimals = fallbackDecimals
+	}
+	if source == "" {
+		return domain.PrepareResult{}, domain.E("INSUFFICIENT_FUNDS", "代币余额不够", "先确认这个地址的 "+asset.Symbol+" 余额。手续费另用 SOL 支付。")
+	}
+	if decimals != asset.Decimals {
+		return domain.PrepareResult{}, domain.E("INVALID_ARGUMENT", "链上小数位和配置不一致", fmt.Sprintf("这条代币在链上是 %d 位小数。", decimals))
+	}
+	info, err := c.call(ctx, "getAccountInfo", []any{destAta, map[string]string{"encoding": "base64"}})
+	if err != nil {
+		return domain.PrepareResult{}, err
+	}
+	var account struct {
+		Value *json.RawMessage `json:"value"`
+	}
+	if err := json.Unmarshal(info, &account); err != nil {
+		return domain.PrepareResult{}, err
+	}
+	create := account.Value == nil || string(*account.Value) == "null"
+	hashRaw, err := c.call(ctx, "getLatestBlockhash", []any{map[string]string{"commitment": "confirmed"}})
+	if err != nil {
+		return domain.PrepareResult{}, err
+	}
+	var parsed struct {
+		Value struct {
+			Blockhash string `json:"blockhash"`
+		} `json:"value"`
+	}
+	if err := json.Unmarshal(hashRaw, &parsed); err != nil || parsed.Value.Blockhash == "" {
+		return domain.PrepareResult{}, fmt.Errorf("节点没有返回 blockhash")
+	}
+	msg, err := txbuild.BuildSOLTokenTransfer(from, source, destAta, to, asset.Contract, value, decimals, create, parsed.Value.Blockhash)
+	if err != nil {
+		return domain.PrepareResult{}, err
+	}
+	warnings := []string{"blockhash 大约一分钟失效，签完尽快广播。", "代币转账的手续费用 SOL 支付。"}
+	if create {
+		warnings = append(warnings, "对方还没有这个币的关联账户，这笔交易会创建它，大约再花 0.00204 SOL。")
+	}
+	return domain.PrepareResult{
+		Chain:   domain.Solana,
+		Network: c.network,
+		Mode:    "live",
+		Asset:   asset.Symbol,
+		From:    from,
+		To:      to,
+		Amount:  amount,
+		Fee:     domain.Fee{Symbol: "SOL", Amount: "0.000005", Detail: map[string]string{"lamports": "5000"}},
+		Payload: domain.SOLPayload{
+			Message:   base64.StdEncoding.EncodeToString(msg),
+			Blockhash: parsed.Value.Blockhash,
+			Lamports:  "0",
+			From:      from,
+			To:        to,
+		},
+		Warnings: warnings,
 	}, nil
 }
 

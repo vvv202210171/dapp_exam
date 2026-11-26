@@ -1,9 +1,9 @@
 // 先向后端报价，再用本地私钥签名。改表单会清掉旧报价，避免拿过期 nonce 或 blockhash 去签。
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { CopyButton, Fault, Field } from "../components/ui";
 import { useSession } from "../session";
-import type { Chain, PrepareResult, Transfer } from "../types";
+import type { Chain, Portfolio, PrepareResult, Transfer } from "../types";
 import { signPayload } from "../wallet/sign";
 
 // 转账页：先报价，再本地签名，可选立刻广播。
@@ -19,8 +19,28 @@ export function Send() {
   const [result, setResult] = useState<Transfer | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
+  const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
+  const [balanceError, setBalanceError] = useState(false);
+  const [balanceBusy, setBalanceBusy] = useState(false);
   const from = session.derived[chain].address;
   const selected = useMemo(() => assets.find((item) => item.symbol === asset) ?? assets[0], [assets, asset]);
+  const chainRow = portfolio?.chains.find((item) => item.chain === chain);
+  const balance = chainRow?.assets.find((item) => item.symbol === (selected?.symbol ?? asset));
+  const nativeBalance = chainRow?.assets.find((item) => item.kind === "native");
+
+  async function loadBalance() {
+    setBalanceBusy(true);
+    setBalanceError(false);
+    try {
+      setPortfolio(await api<Portfolio>(`/api/v1/accounts/${session.accountId}/assets`));
+    } catch {
+      setBalanceError(true);
+    } finally {
+      setBalanceBusy(false);
+    }
+  }
+
+  useEffect(() => { void loadBalance(); }, [session.accountId]);
 
   // 表单变化后清掉旧报价，避免签到过期参数。
   function resetQuote() {
@@ -63,11 +83,12 @@ export function Send() {
           to,
           amount,
           fee: `${quote.fee.amount} ${quote.fee.symbol}`,
-          signedPayload,
-          broadcast,
-        }),
-      }));
-    } catch (err) {
+        signedPayload,
+        broadcast,
+      }),
+    }));
+    if (broadcast) await loadBalance();
+  } catch (err) {
       setError(err);
     } finally {
       setBusy(false);
@@ -103,6 +124,19 @@ export function Send() {
           <Field label="从">
             <input className="mono" readOnly value={from} />
           </Field>
+          <div className="stack">
+            <div className="row">
+              {balanceBusy && <span className="muted">正在查询余额…</span>}
+              {!balanceBusy && balanceError && <span className="bad">余额暂时查不到</span>}
+              {!balanceBusy && !balanceError && balance && <span className="mono">余额 {balance.amount} {balance.symbol}</span>}
+              {!balanceBusy && !balanceError && !balance && <span className="muted">余额还没取到</span>}
+              <button className="text-btn" type="button" disabled={balanceBusy} onClick={() => void loadBalance()}>刷新余额</button>
+            </div>
+            {balance && !balance.ok && balance.error && <div className="bad">{balance.error.message}</div>}
+            {nativeBalance && selected && nativeBalance.symbol !== selected.symbol && (
+              <div className="muted">{nativeBalance.symbol} {nativeBalance.amount}，手续费从这里扣</div>
+            )}
+          </div>
           <Field label="到">
             <input className="mono" value={to} onChange={(event) => { setTo(event.target.value); resetQuote(); }} placeholder="收款地址" />
           </Field>

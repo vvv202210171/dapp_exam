@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { api } from "../api";
 import CopyButton from "../components/CopyButton.vue";
 import Fault from "../components/Fault.vue";
 import Field from "../components/Field.vue";
 import { nextAddress, wallet } from "../session";
-import type { Chain, PrepareResult, Transfer } from "../types";
+import type { Chain, Portfolio, PrepareResult, Transfer } from "../types";
 import { signPayload } from "../wallet/sign";
 
 const session = computed(() => wallet.session);
@@ -17,11 +17,31 @@ const quote = ref<PrepareResult | null>(null);
 const result = ref<Transfer | null>(null);
 const error = ref<unknown>(null);
 const busy = ref(false);
+const portfolio = ref<Portfolio | null>(null);
+const balanceError = ref<unknown>(null);
+const balanceBusy = ref(false);
 
 const info = computed(() => session.value?.meta.chains.find((item) => item.id === chain.value));
 const assets = computed(() => info.value?.assets ?? []);
 const selected = computed(() => assets.value.find((item) => item.symbol === asset.value) ?? assets.value[0]);
 const from = computed(() => (session.value ? session.value.derived[chain.value].address : ""));
+const chainRow = computed(() => portfolio.value?.chains.find((item) => item.chain === chain.value));
+const balance = computed(() => chainRow.value?.assets.find((item) => item.symbol === (selected.value?.symbol ?? asset.value)));
+const nativeBalance = computed(() => chainRow.value?.assets.find((item) => item.kind === "native"));
+
+async function loadBalance() {
+  const current = session.value;
+  if (!current) return;
+  balanceBusy.value = true;
+  balanceError.value = null;
+  try {
+    portfolio.value = await api<Portfolio>(`/api/v1/accounts/${current.accountId}/assets`);
+  } catch (err) {
+    balanceError.value = err;
+  } finally {
+    balanceBusy.value = false;
+  }
+}
 
 function resetQuote() {
   quote.value = null;
@@ -84,6 +104,7 @@ async function sign(broadcast: boolean) {
         broadcast,
       }),
     });
+    if (broadcast) await loadBalance();
   } catch (err) {
     error.value = err;
   } finally {
@@ -95,6 +116,10 @@ function fillNext() {
   to.value = nextAddress(chain.value);
   resetQuote();
 }
+
+onMounted(() => {
+  void loadBalance();
+});
 
 function resultTitle(status: Transfer["status"]) {
   if (status === "signed") return "已签名，尚未广播";
@@ -126,6 +151,19 @@ function resultTitle(status: Transfer["status"]) {
         <Field label="从">
           <input class="mono" readonly :value="from" />
         </Field>
+        <div class="stack">
+          <div class="row">
+            <span v-if="balanceBusy" class="muted">正在查询余额…</span>
+            <span v-else-if="balanceError" class="bad">余额暂时查不到</span>
+            <span v-else-if="balance" class="mono">余额 {{ balance.amount }} {{ balance.symbol }}</span>
+            <span v-else class="muted">余额还没取到</span>
+            <button class="text-btn" type="button" :disabled="balanceBusy" @click="loadBalance">刷新余额</button>
+          </div>
+          <div v-if="balance && !balance.ok && balance.error" class="bad">{{ balance.error.message }}</div>
+          <div v-if="nativeBalance && selected && nativeBalance.symbol !== selected.symbol" class="muted">
+            {{ nativeBalance.symbol }} {{ nativeBalance.amount }}，手续费从这里扣
+          </div>
+        </div>
         <Field label="到">
           <input v-model="to" class="mono" placeholder="收款地址" @input="resetQuote" />
         </Field>

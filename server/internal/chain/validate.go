@@ -33,6 +33,31 @@ func NormalizeAddress(id domain.ChainID, address string) string {
 	}
 }
 
+// RejectZero 拒绝代币合约不接受的零地址。T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb 是 20 个 0 的波场写法。
+func RejectZero(id domain.ChainID, address string) error {
+	address = strings.TrimSpace(address)
+	zero := false
+	switch id {
+	case domain.Ethereum, domain.BNB:
+		zero = strings.EqualFold(address, "0x0000000000000000000000000000000000000000")
+	case domain.Tron:
+		raw, err := platform.Base58CheckDecode(address)
+		if err == nil && len(raw) == 21 && raw[0] == 0x41 {
+			zero = true
+			for _, b := range raw[1:] {
+				if b != 0 {
+					zero = false
+					break
+				}
+			}
+		}
+	}
+	if zero {
+		return domain.E("INVALID_ARGUMENT", "不能转到零地址", "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb 是 20 个 0 的波场写法。0x 后面 40 个 0 是 EVM 的零地址。代币合约会直接拒绝。")
+	}
+	return nil
+}
+
 // 按链和网络检查地址格式，不通过就返回可读错误。
 func ValidateAddress(id domain.ChainID, network, address string) error {
 	address = strings.TrimSpace(address)

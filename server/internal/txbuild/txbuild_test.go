@@ -83,6 +83,32 @@ func TestSOLMessageShape(t *testing.T) {
 	_ = base64.StdEncoding.EncodeToString(msg)
 }
 
+// 关联账户要和独立算出的地址一致，转账消息只签一次。
+func TestSPLAssociatedAccount(t *testing.T) {
+	owner := "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk"
+	got, err := AssociatedTokenAddress(owner, "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "5N3f1tj9v1vc5TUZ8S7mCAnVmjVKrfnzXWhxLaxyZAgt" {
+		t.Fatalf("ata %s", got)
+	}
+	dev, err := AssociatedTokenAddress(owner, "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dev != "Bjr2Shw9sy31UNdm8kYs5y72iTbnxB4JemK98vJqyQWm" {
+		t.Fatalf("dev ata %s", dev)
+	}
+	msg, err := BuildSOLTokenTransfer(owner, got, dev, "4fYNw3dojWmQ4dXtSGE9epjRGy9pFSx62YypT7avPYvA", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", 1_000_000, 6, false, platform.Base58Encode(bytesRepeat(9)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg[0] != 1 || msg[1] != 0 || msg[2] != 2 || msg[3] != 5 || msg[len(msg)-1] != 6 {
+		t.Fatalf("message header %v tail %d", msg[:4], msg[len(msg)-1])
+	}
+}
+
 // 测试里生成一段重复字节。
 func bytesRepeat(v byte) []byte {
 	b := make([]byte, 32)

@@ -149,18 +149,51 @@ func (a sandboxAdapter) prepareBTC(from, to, amount string, units *big.Int, asse
 
 // 构造固定 blockhash 的原生 SOL 转账消息。
 func (a sandboxAdapter) prepareSOL(from, to, amount string, units *big.Int, asset domain.Asset) (domain.PrepareResult, error) {
-	if asset.Kind != "native" {
-		return domain.PrepareResult{}, domain.E("INVALID_ARGUMENT", "沙箱里的 Solana 转账只覆盖原生 SOL", "USDT/USDC 可以在资产页看到模拟余额。SPL 转账需要关联代币账户。")
-	}
-	lamports, err := txbuild.MustUint64(units)
-	if err != nil || lamports == 0 {
-		return domain.PrepareResult{}, domain.E("INVALID_ARGUMENT", "金额超出范围", "")
-	}
 	block := make([]byte, 32)
 	for i := range block {
 		block[i] = 7
 	}
 	blockhash := platform.Base58Encode(block)
+	if asset.Kind != "native" {
+		if asset.Contract == "" {
+			return domain.PrepareResult{}, domain.E("INVALID_ARGUMENT", "当前网络不能转这个代币", asset.Note)
+		}
+		value, err := txbuild.MustUint64(units)
+		if err != nil || value == 0 {
+			return domain.PrepareResult{}, domain.E("INVALID_ARGUMENT", "金额超出范围", "")
+		}
+		source, err := txbuild.AssociatedTokenAddress(from, asset.Contract)
+		if err != nil {
+			return domain.PrepareResult{}, err
+		}
+		dest, err := txbuild.AssociatedTokenAddress(to, asset.Contract)
+		if err != nil {
+			return domain.PrepareResult{}, err
+		}
+		msg, err := txbuild.BuildSOLTokenTransfer(from, source, dest, to, asset.Contract, value, asset.Decimals, true, blockhash)
+		if err != nil {
+			return domain.PrepareResult{}, err
+		}
+		return domain.PrepareResult{
+			Chain:   domain.Solana,
+			Network: a.network,
+			Mode:    "sandbox",
+			Asset:   asset.Symbol,
+			From:    from,
+			To:      to,
+			Amount:  amount,
+			Fee:     domain.Fee{Symbol: "SOL", Amount: "0.000005", Detail: map[string]string{"lamports": "5000"}},
+			Payload: domain.SOLPayload{Message: base64.StdEncoding.EncodeToString(msg), Blockhash: blockhash, Lamports: "0", From: from, To: to},
+			Warnings: []string{
+				"沙箱 blockhash 是固定值，签出来的交易不会被 Solana 接受。",
+				"教学消息会带上创建关联账户的指令。真实网络上这一步大约再花 0.00204 SOL。",
+			},
+		}, nil
+	}
+	lamports, err := txbuild.MustUint64(units)
+	if err != nil || lamports == 0 {
+		return domain.PrepareResult{}, domain.E("INVALID_ARGUMENT", "金额超出范围", "")
+	}
 	msg, err := txbuild.BuildSOLTransfer(from, to, lamports, blockhash)
 	if err != nil {
 		return domain.PrepareResult{}, err

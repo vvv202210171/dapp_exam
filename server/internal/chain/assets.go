@@ -14,11 +14,12 @@ type TokenSpec struct {
 	Name      string
 	Decimals  int
 	Contracts map[string]string
+	Notes     map[string]string
 }
 
 // 组装一条代币目录项。
-func token(symbol, name string, decimals int, contracts map[string]string) TokenSpec {
-	return TokenSpec{Symbol: symbol, Name: name, Decimals: decimals, Contracts: contracts}
+func token(symbol, name string, decimals int, contracts, notes map[string]string) TokenSpec {
+	return TokenSpec{Symbol: symbol, Name: name, Decimals: decimals, Contracts: contracts, Notes: notes}
 }
 
 // 返回这条链支持的 USDT、USDC 及各自精度和合约地址。
@@ -26,24 +27,24 @@ func Catalog(id domain.ChainID) []TokenSpec {
 	switch id {
 	case domain.Ethereum:
 		return []TokenSpec{
-			token("USDT", "Tether USD", 6, map[string]string{"mainnet": "0xdAC17F958D2ee523a2206206994597C13D831ec7"}),
-			token("USDC", "USD Coin", 6, map[string]string{"mainnet": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"}),
+			token("USDT", "Tether USD", 6, map[string]string{"mainnet": "0xdAC17F958D2ee523a2206206994597C13D831ec7", "testnet": "0xaA8E23Fb1079EA71e0a56F48a2aA51851D8433D0"}, map[string]string{"testnet": "Sepolia 上名为 USDT 的测试币，6 位小数。"}),
+			token("USDC", "USD Coin", 6, map[string]string{"mainnet": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", "testnet": "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238"}, map[string]string{"testnet": "Circle 在 Sepolia 上的 USDC，6 位小数。"}),
 		}
 	case domain.BNB:
 		// BSC 上的 USDT、USDC 是 18 位小数。同名代币跨链单位不同，填错会差 10^12。
 		return []TokenSpec{
-			token("USDT", "Tether USD", 18, map[string]string{"mainnet": "0x55d398326f99059fF775485246999027B3197955"}),
-			token("USDC", "USD Coin", 18, map[string]string{"mainnet": "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d"}),
+			token("USDT", "Tether USD", 18, map[string]string{"mainnet": "0x55d398326f99059fF775485246999027B3197955", "testnet": "0x337610d27c682E347C9cD60BD4b3b107C9d34dDd"}, map[string]string{"testnet": "BSC 测试网 USDT，18 位小数。"}),
+			token("USDC", "USD Coin", 18, map[string]string{"mainnet": "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d"}, nil),
 		}
 	case domain.Tron:
 		return []TokenSpec{
-			token("USDT", "Tether USD", 6, map[string]string{"mainnet": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"}),
-			token("USDC", "USD Coin", 6, map[string]string{"mainnet": "TEkxiTehnzSmSe2XqrBj4w32RUN966rdz8"}),
+			token("USDT", "Tether USD", 6, map[string]string{"mainnet": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", "testnet": "TG3XXyExBkPp9nzdajDZsozEu4BkaSJozs"}, map[string]string{"testnet": "Shasta 水龙头发放的测试 USDT，6 位小数。"}),
+			token("USDC", "USD Coin", 6, map[string]string{"mainnet": "TEkxiTehnzSmSe2XqrBj4w32RUN966rdz8"}, nil),
 		}
 	case domain.Solana:
 		return []TokenSpec{
-			token("USDT", "Tether USD", 6, map[string]string{"mainnet": "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"}),
-			token("USDC", "USD Coin", 6, map[string]string{"mainnet": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"}),
+			token("USDT", "Tether USD", 6, map[string]string{"mainnet": "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"}, nil),
+			token("USDC", "USD Coin", 6, map[string]string{"mainnet": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "testnet": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"}, map[string]string{"testnet": "Circle 在 devnet 上的 USDC，6 位小数。"}),
 		}
 	default:
 		return nil
@@ -69,6 +70,8 @@ func Assets(id domain.ChainID, network, mode string) []domain.Asset {
 			} else {
 				note = "当前网络没有配置该代币的官方合约，余额按 0 处理。"
 			}
+		} else if spec.Notes != nil {
+			note = spec.Notes[network]
 		}
 		out = append(out, domain.Asset{
 			Symbol:   spec.Symbol,
