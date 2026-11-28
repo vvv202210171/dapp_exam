@@ -29,7 +29,7 @@ public final class TxBuild {
     public record Coins(List<BtcInput> selected, long fee, long change) {}
 
     /**
-     * 从小到大凑够金额加手续费的输入。
+     * 从大到小凑够金额加手续费的输入。
      *
      * @param utxos 可用输出
      * @param amount 转出金额，单位聪
@@ -64,7 +64,9 @@ public final class TxBuild {
      */
     private static long[] fitCoins(long total, long amount, long feeRate, int nIn) {
         if (total < amount) return null;
+        //这里为什么是2个输出？因为有可能有找零输出，所以先算两个输出的手续费，如果够就返回找零；如果不够再算一个输出的手续费。
         long feeWithChange = estimateVSize(nIn, 2) * feeRate;
+        // 546 是比特币最小找零金额，低于这个就不找零了。
         if (total >= amount + feeWithChange) {
             long change = total - amount - feeWithChange;
             if (change >= 546) return new long[] {feeWithChange, change};
