@@ -5,7 +5,7 @@ import CopyButton from "../components/CopyButton.vue";
 import Fault from "../components/Fault.vue";
 import { formatWhen, shortAddress } from "../format";
 import { wallet } from "../session";
-import { CHAIN_LABEL, type Transfer } from "../types";
+import { CHAINS, CHAIN_LABEL, type Chain, type Transfer } from "../types";
 
 const STATUS: Record<Transfer["status"], string> = {
   signed: "已签名",
@@ -17,6 +17,8 @@ const STATUS: Record<Transfer["status"], string> = {
 const session = computed(() => wallet.session);
 const rows = ref<Transfer[]>([]);
 const error = ref<unknown>(null);
+const tab = ref<Chain>("bitcoin");
+const visible = computed(() => rows.value.filter((row) => row.chain === tab.value));
 
 async function load() {
   const current = session.value;
@@ -57,11 +59,17 @@ onMounted(() => {
     </div>
     <p class="muted">节点不能廉价地给出某个地址的完整历史。这里的账本是本地发起记录，状态再向节点核对。全量历史需要索引器。</p>
     <Fault :error="error" />
-    <div class="sheet" style="margin-top: 16px">
-      <p v-if="rows.length === 0" class="muted">还没有交易。</p>
-      <article v-for="row in rows" :key="row.id" class="transfer">
+    <div class="browser" style="margin-top: 16px">
+      <div class="tabs" role="tablist">
+        <button v-for="id in CHAINS" :key="id" type="button" role="tab" :aria-selected="tab === id" :data-chain="id" @click="tab = id">
+          {{ CHAIN_LABEL[id] }}
+        </button>
+      </div>
+      <div class="sheet tab-body" :data-chain="tab">
+      <p v-if="visible.length === 0" class="muted">这条链还没有从本钱包发出的交易。</p>
+      <article v-for="row in visible" :key="row.id" class="transfer">
         <div>
-          <strong>{{ CHAIN_LABEL[row.chain] }} · {{ row.amount }} {{ row.asset }}</strong>
+          <strong>{{ row.amount }} {{ row.asset }}</strong>
           <div class="muted">{{ formatWhen(row.createdAt) }}</div>
           <div class="muted">{{ shortAddress(row.from) }} → {{ shortAddress(row.to) }}</div>
           <div class="tag">{{ STATUS[row.status] }}{{ row.fee ? ` · 费 ${row.fee}` : "" }}</div>
@@ -73,6 +81,7 @@ onMounted(() => {
           <button v-if="row.txHash" class="ghost" type="button" @click="act(row.id, 'refresh')">查状态</button>
         </div>
       </article>
+      </div>
     </div>
   </section>
 </template>

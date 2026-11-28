@@ -5,7 +5,7 @@ import { api } from "../api";
 import { CopyButton, Fault, formatWhen, money, shortAddress } from "../components/ui";
 import { addressExplorer } from "../explorer";
 import { useSession } from "../session";
-import type { Chain, Portfolio, SettlementView, Transfer } from "../types";
+import { CHAIN_LABEL, type Chain, type Portfolio, type SettlementView, type Transfer, CHAINS } from "../types";
 import { localUsdcHistory, type UsdcMove } from "../usdcHistory";
 
 // 展示五条链的余额、估值和收款地址。
@@ -16,6 +16,7 @@ export function Assets() {
   const [receive, setReceive] = useState<{ address: string; title: string; chain: Chain } | null>(null);
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [usdc, setUsdc] = useState<UsdcMove[]>([]);
+  const [tab, setTab] = useState<Chain>("bitcoin");
 
   // 向后端拉取这个账户的资产组合。
   async function load() {
@@ -41,12 +42,14 @@ export function Assets() {
 
   useEffect(() => { void load(); }, [session.accountId]);
 
+  const chain = data?.chains.find((item) => item.chain === tab);
+
   return (
     <section>
       <div className="page-head">
         <div>
           <p className="eyebrow">资产</p>
-          <h2>五条链，一次看完</h2>
+          <h2>按链查看</h2>
         </div>
         <div className="total">
           <span className="muted">估算 {data?.priceSource === "static" ? "· 静态价格" : ""}</span>
@@ -58,9 +61,17 @@ export function Assets() {
         <span className="muted">刷新是手动的，避免对着公共节点轮询。</span>
       </div>
       <Fault error={error} />
-      <div className="grid">
-        {data?.chains.map((chain) => (
-          <article className="chain" key={chain.chain} data-chain={chain.chain}>
+      <div className="browser">
+        <div className="tabs" role="tablist">
+          {CHAINS.map((id) => (
+            <button key={id} type="button" role="tab" aria-selected={tab === id} data-chain={id} onClick={() => setTab(id)}>
+              {CHAIN_LABEL[id]}
+            </button>
+          ))}
+        </div>
+        {!chain && <article className="chain tab-body"><p className="muted">正在读取这条链。</p></article>}
+        {chain && (
+          <article className="chain tab-body" data-chain={chain.chain}>
             <header>
               <div>
                 <strong>{chain.name}</strong>
@@ -89,7 +100,7 @@ export function Assets() {
             <AddressTransfers address={chain.address} rows={transfers.filter((row) => row.chain === chain.chain && (sameAddress(row.from, chain.address) || sameAddress(row.to, chain.address)))} />
             {chain.chain === "ethereum" && <UsdcTransfers rows={usdc} />}
           </article>
-        ))}
+        )}
       </div>
       {receive && <Receive title={receive.title} address={receive.address} chain={receive.chain} network={session.meta.network} onClose={() => setReceive(null)} />}
     </section>

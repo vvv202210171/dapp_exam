@@ -7,7 +7,7 @@ import Fault from "../components/Fault.vue";
 import { addressExplorer } from "../explorer";
 import { formatWhen, money, shortAddress } from "../format";
 import { wallet } from "../session";
-import type { Chain, Portfolio, SettlementView, Transfer } from "../types";
+import { CHAINS, CHAIN_LABEL, type Chain, type Portfolio, type SettlementView, type Transfer } from "../types";
 import { localUsdcHistory, type UsdcMove } from "../usdcHistory";
 
 const session = computed(() => wallet.session);
@@ -16,6 +16,7 @@ const error = ref<unknown>(null);
 const receive = ref<{ address: string; title: string; chain: Chain } | null>(null);
 const transfers = ref<Transfer[]>([]);
 const usdc = ref<UsdcMove[]>([]);
+const tab = ref<Chain>("bitcoin");
 const qr = ref("");
 
 const USDC_KIND: Record<UsdcMove["kind"], string> = {
@@ -36,6 +37,8 @@ const STATUS: Record<Transfer["status"], string> = {
 function sameAddress(left: string, right: string) {
   return left.trim().toLowerCase() === right.trim().toLowerCase();
 }
+
+const selected = computed(() => data.value?.chains.find((item) => item.chain === tab.value));
 
 function chainTransfers(address: string, chain: string) {
   return transfers.value.filter((row) => row.chain === chain && (sameAddress(row.from, address) || sameAddress(row.to, address)));
@@ -82,7 +85,7 @@ onMounted(() => {
     <div class="page-head">
       <div>
         <p class="eyebrow">资产</p>
-        <h2>五条链，一次看完</h2>
+        <h2>按链查看</h2>
       </div>
       <div class="total">
         <span class="muted">估算{{ data?.priceSource === "static" ? " · 静态价格" : "" }}</span>
@@ -94,22 +97,30 @@ onMounted(() => {
       <span class="muted">刷新是手动的，避免对着公共节点轮询。</span>
     </div>
     <Fault :error="error" />
-    <div class="grid">
-      <article v-for="chain in data?.chains ?? []" :key="chain.chain" class="chain" :data-chain="chain.chain">
+    <div class="browser">
+      <div class="tabs" role="tablist">
+        <button v-for="id in CHAINS" :key="id" type="button" role="tab" :aria-selected="tab === id" :data-chain="id" @click="tab = id">
+          {{ CHAIN_LABEL[id] }}
+        </button>
+      </div>
+      <article v-if="!selected" class="chain tab-body">
+        <p class="muted">正在读取这条链。</p>
+      </article>
+      <article v-else class="chain tab-body" :data-chain="selected.chain">
         <header>
           <div>
-            <strong>{{ chain.name }}</strong>
+            <strong>{{ selected.name }}</strong>
             <div class="addr">
-              {{ shortAddress(chain.address) }}
-              <CopyButton :value="chain.address" />
-              <a class="text-btn" :href="addressExplorer(chain.chain, session.meta.network, chain.address)" target="_blank" rel="noopener noreferrer">链上记录</a>
+              {{ shortAddress(selected.address) }}
+              <CopyButton :value="selected.address" />
+              <a class="text-btn" :href="addressExplorer(selected.chain, session.meta.network, selected.address)" target="_blank" rel="noopener noreferrer">链上记录</a>
             </div>
-            <div class="tag">{{ chain.path }}</div>
+            <div class="tag">{{ selected.path }}</div>
           </div>
-          <button class="ghost" type="button" @click="receive = { address: chain.address, title: chain.name, chain: chain.chain }">收款</button>
+          <button class="ghost" type="button" @click="receive = { address: selected.address, title: selected.name, chain: selected.chain }">收款</button>
         </header>
-        <Fault v-if="!chain.ok" :error="chain.error" />
-        <div v-for="asset in chain.assets" :key="asset.symbol" class="asset">
+        <Fault v-if="!selected.ok" :error="selected.error" />
+        <div v-for="asset in selected.assets" :key="asset.symbol" class="asset">
           <div>
             <b>{{ asset.symbol }}</b>
             <div class="muted">{{ asset.name }}{{ asset.note ? ` · ${asset.note}` : "" }}</div>
@@ -122,10 +133,10 @@ onMounted(() => {
         </div>
         <div class="stack" style="margin-top: 8px">
           <span class="muted">转账记录</span>
-          <p v-if="chainTransfers(chain.address, chain.chain).length === 0" class="muted">这个地址还没有从本钱包发出的转账。</p>
-          <div v-for="row in chainTransfers(chain.address, chain.chain)" :key="row.id" class="entry">
+          <p v-if="chainTransfers(selected.address, selected.chain).length === 0" class="muted">这个地址还没有从本钱包发出的转账。</p>
+          <div v-for="row in chainTransfers(selected.address, selected.chain)" :key="row.id" class="entry">
             <div>
-              <strong>{{ sameAddress(row.from, chain.address) ? "转出" : "转入" }} {{ row.amount }} {{ row.asset }}</strong>
+              <strong>{{ sameAddress(row.from, selected.address) ? "转出" : "转入" }} {{ row.amount }} {{ row.asset }}</strong>
               <div class="muted">{{ formatWhen(row.createdAt) }}</div>
               <div class="muted">{{ shortAddress(row.from) }} → {{ shortAddress(row.to) }}</div>
               <div v-if="row.txHash" class="addr">{{ shortAddress(row.txHash) }} <CopyButton :value="row.txHash" /></div>
@@ -133,7 +144,7 @@ onMounted(() => {
             <span class="tag">{{ STATUS[row.status] }}</span>
           </div>
         </div>
-        <div v-if="chain.chain === 'ethereum'" class="stack" style="margin-top: 8px">
+        <div v-if="selected.chain === 'ethereum'" class="stack" style="margin-top: 8px">
           <span class="muted">USDC 记录</span>
           <p v-if="usdc.length === 0" class="muted">这个地址在本地结算链上还没有 USDC 流水。</p>
           <div v-for="row in usdc" :key="row.hash + row.kind" class="entry">

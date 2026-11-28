@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import { CopyButton, Fault, formatWhen, shortAddress } from "../components/ui";
 import { useSession } from "../session";
-import { CHAIN_LABEL, type Transfer } from "../types";
+import { CHAINS, CHAIN_LABEL, type Chain, type Transfer } from "../types";
 
 const STATUS: Record<Transfer["status"], string> = {
   signed: "已签名",
@@ -17,6 +17,7 @@ export function Activity() {
   const session = useSession();
   const [rows, setRows] = useState<Transfer[]>([]);
   const [error, setError] = useState<unknown>(null);
+  const [tab, setTab] = useState<Chain>("bitcoin");
 
   // 拉取转账记录。
   async function load() {
@@ -30,6 +31,8 @@ export function Activity() {
   }
 
   useEffect(() => { void load(); }, [session.accountId]);
+
+  const visible = rows.filter((row) => row.chain === tab);
 
   // 广播一笔已签名交易，或向节点刷新状态。
   async function act(id: string, kind: "broadcast" | "refresh") {
@@ -54,12 +57,20 @@ export function Activity() {
       </div>
       <p className="muted">节点不能廉价地给出某个地址的完整历史。这里的账本是本地发起记录，状态再向节点核对。全量历史需要索引器。</p>
       <Fault error={error} />
-      <div className="sheet" style={{ marginTop: 16 }}>
-        {rows.length === 0 && <p className="muted">还没有交易。</p>}
-        {rows.map((row) => (
+      <div className="browser" style={{ marginTop: 16 }}>
+        <div className="tabs" role="tablist">
+          {CHAINS.map((id) => (
+            <button key={id} type="button" role="tab" aria-selected={tab === id} data-chain={id} onClick={() => setTab(id)}>
+              {CHAIN_LABEL[id]}
+            </button>
+          ))}
+        </div>
+        <div className="sheet tab-body" data-chain={tab}>
+        {visible.length === 0 && <p className="muted">这条链还没有从本钱包发出的交易。</p>}
+        {visible.map((row) => (
           <article className="transfer" key={row.id}>
             <div>
-              <strong>{CHAIN_LABEL[row.chain]} · {row.amount} {row.asset}</strong>
+              <strong>{row.amount} {row.asset}</strong>
               <div className="muted">{formatWhen(row.createdAt)}</div>
               <div className="muted">{shortAddress(row.from)} → {shortAddress(row.to)}</div>
               <div className="tag">{STATUS[row.status]}{row.fee ? ` · 费 ${row.fee}` : ""}</div>
@@ -72,6 +83,7 @@ export function Activity() {
             </div>
           </article>
         ))}
+        </div>
       </div>
     </section>
   );
